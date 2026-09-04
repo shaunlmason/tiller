@@ -1,0 +1,66 @@
+# tiller
+
+A small agentic harness for Elixir. One loop, two modes: a session you drive
+interactively, or a session that spawns supervised subagents. Subagents are
+not a mode — they're a tool (`spawn_subagent`) in the parent's whitelist.
+
+## Design
+
+### The borrowed idea
+
+From [lisptc](https://github.com/1hachem/lisptc) (neuro-symbolic LLM + small
+Lisp runtime): constrain the model's action output to **data in a shared,
+inspectable store**, so the trajectory is a diffable, replayable program —
+not a pile of log strings.
+
+We keep that property and drop the interpreter: in Elixir, a quoted term
+*is* the AST, and evaluating it against a whitelisted set of functions gives
+us lisptc's three claims with no runtime to maintain:
+
+1. **Constrained output** — the driver emits a quoted MFA term, not free-form code. Garbage in → `FunctionClauseError`, not a half-executed script.
+2. **Deterministic memory** — every action + result is appended to a single
+   `Tiller.State` log. It is the audit trail, the replay log, and the source
+   of the next prompt. One thing, three jobs.
+3. **Bidirectional** — the loop is just `next_action(state) → eval → append → repeat`.
+
+### Architecture
+
+```
+Tiller (DynamicSupervisor)
+├─ Tiller.State            ← shared action log (GenServer, plain list)
+├─ Session (root)          ← you drive; tools: echo, spawn_subagent
+│   └─ Session (subagent)  ← LLM/fake-driven; smaller whitelist, no spawn
+└─ Session (other tasks)
+```
+
+- **Session** (`Tiller.Session`): one GenServer per run. Loop: ask driver for
+  next action → evaluate against tool whitelist → append to `Tiller.State` →
+  repeat until `:halt`. Crashes are contained; a dead subagent hands its parent
+  a `{:subagent, pid, :crash}` value and nothing else dies.
+- **Driver** (`Tiller.Driver` behaviour): the only seam for "where the next
+  action comes from". `Tiller.FakeDriver` scripts a list of actions for
+  tests/demos. A real LLM driver (grammar-constrained decode → quoted term)
+  plugs in here with no other changes.
+- **Actions** (`Tiller.Actions`): the registry. The grammar *is* the
+  capability boundary — an agent can only touch what's in its whitelist.
+  Subagents get a smaller whitelist and can't spawn (depth limit).
+
+### Deliberate limits (upgrade paths)
+
+- Actions are flat MFA terms, no macros/macros-as-prompts. Add when a real
+  LLM driver needs composability the whitelist can't express.
+- `Tiller.State` is an in-memory list, not ETS/Ecto. Add persistence when
+  you need replay across restarts.
+- One loop = synchronous turn-taking; no concurrent tool calls per turn.
+  Add `Task.async_stream` when a single turn needs fan-out.
+- No real LLM driver yet. The FakeDriver is the contract.
+
+## Status
+
+Scaffold: Mix project, State, Actions, FakeDriver, Session, supervisor,
+test + demo. Run:
+
+```sh
+mix test
+mix run -e 'Tiller.Demo.run()'
+```
