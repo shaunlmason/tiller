@@ -55,6 +55,30 @@ Tiller (DynamicSupervisor)
   Add `Task.async_stream` when a single turn needs fan-out.
 - No real LLM driver yet. The FakeDriver is the contract.
 
+## Research
+
+Projects looked at while shaping tiller, with the verdict on each.
+
+- **[lisptc](https://github.com/1hachem/lisptc)**: borrowed. The
+  "constrain action output to data in a shared, inspectable store" idea is
+  the core of tiller (see The borrowed idea above).
+- **[okf-agent-memory](https://github.com/okf-memory/okf-agent-memory)**:
+  bookmarked, not adopted. A git-native project memory for coding agents:
+  Markdown concepts with YAML frontmatter under `knowledge/`, following
+  Google's Open Knowledge Format v0.2, plus a zero-dependency Go binary that
+  validates the bundle, runs BM25 search, and exposes six tools over MCP
+  (search, show, create, update, relate, validate). It solves cross-session
+  knowledge, a different axis from `Tiller.State`, which is per-run
+  trajectory state. Not adopted now because tiller has no LLM driver to read
+  a memory, it would add a Go binary to a zero-dependency Elixir project, and
+  `docs/*.jsonl` already serves as the agent memory for working on tiller.
+  The project is very new (bundle dated late August 2026) and its benchmark
+  claims against Mem0 and Letta are unlinked, so treat them as marketing.
+  Possible future use: wrap `okf search` as a `Tiller.Tools` function once a
+  real driver exists. A memory-read tool is a genuinely distinct tool, and
+  "what if the agent could not consult memory at turn N" is a clean whitelist
+  mutation axis for the butterfly lab.
+
 ## Status
 
 Scaffold: Mix project, State, Actions, FakeDriver, Session, supervisor,
