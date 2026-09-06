@@ -4,13 +4,16 @@ defmodule Tiller.SeedTest do
   # engine. Sessions run against it exactly as they would against seed.
   use ExUnit.Case, async: false
 
-  alias Tiller.{Actions, Driver, FakeDriver, Seed, Session, State, Tools}
+  alias Tiller.{Actions, Driver, Event, FakeDriver, Seed, Session, State, Tools}
 
   @fake Path.expand("support/fake_seed_mcp.exs", __DIR__)
 
   setup do
-    State.clear()
-    {:ok, pid} = Seed.start_link(command: ["elixir", @fake], cd: File.cwd!(), actor: "tiller-test")
+    Tiller.reset()
+
+    {:ok, pid} =
+      Seed.start_link(command: ["elixir", @fake], cd: File.cwd!(), actor: "tiller-test")
+
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
     :ok
   end
@@ -39,17 +42,25 @@ defmodule Tiller.SeedTest do
   test "claim, renew, transition, release through the tools with the token threaded" do
     assert {:ok, %{"claim_token" => tok}} = Tools.seed_claim("os-1")
     assert {:ok, %{"verb" => "lease_renew"}} = Tools.seed_lease_renew("os-1", tok)
+
     assert {:ok, %{"verb" => "attach_evidence", "kind" => "pr"}} =
              Tools.seed_attach_evidence("os-1", "pr", "https://example/pr/1", tok)
-    assert {:ok, %{"verb" => "transition", "to" => "review"}} = Tools.seed_transition("os-1", "review", tok)
+
+    assert {:ok, %{"verb" => "transition", "to" => "review"}} =
+             Tools.seed_transition("os-1", "review", tok)
+
     assert {:ok, %{"verb" => "release"}} = Tools.seed_release("os-1", tok)
   end
 
   test "the port's exit classes come back as results: contention, fenced, invalid" do
     assert {:ok, _} = Tools.seed_claim("os-1")
     assert {:refused, %{"error" => "contention", "exit" => 2}} = Tools.seed_claim("os-1")
-    assert {:refused, %{"error" => "fenced_out", "exit" => 6}} = Tools.seed_lease_renew("os-1", "stale")
-    assert {:refused, %{"error" => "invalid_transition", "exit" => 3}} = Tools.seed_claim("os-blocked")
+
+    assert {:refused, %{"error" => "fenced_out", "exit" => 6}} =
+             Tools.seed_lease_renew("os-1", "stale")
+
+    assert {:refused, %{"error" => "invalid_transition", "exit" => 3}} =
+             Tools.seed_claim("os-blocked")
   end
 
   test "a session logs seed verbs as actions; refusals are {:ok, {:refused, _}}, not crashes" do
@@ -61,17 +72,21 @@ defmodule Tiller.SeedTest do
         Driver.action(:seed_transition, ["os-1", "blocked", "tok-1", "plan:12"])
       ])
 
-    {:ok, pid} = Session.start_link(driver: FakeDriver, ctx: ctx)
-    assert {:halted, 4} = Session.run(pid)
+    {:ok, pid} = Session.start_link(driver: FakeDriver, ctx: ctx, id: "seed")
+    Session.run(pid)
+    assert {:halted, 4} = Session.await(pid)
 
+    # An accepted verb's {:ok, envelope} passes through eval unchanged; a
+    # refusal is a bare value, so it is wrapped: a result, not a failure.
     assert [
-             {{:call, Tools, :seed_ready, []}, {:ok, {:ok, %{"verb" => "ready"}}}},
-             {{:call, Tools, :seed_claim, ["os-1", "45m"]}, {:ok, {:ok, %{"claim_token" => "tok-1", "lease" => "45m"}}}},
+             {{:call, Tools, :seed_ready, []}, {:ok, %{"verb" => "ready"}}},
+             {{:call, Tools, :seed_claim, ["os-1", "45m"]},
+              {:ok, %{"claim_token" => "tok-1", "lease" => "45m"}}},
              {{:call, Tools, :seed_claim, ["os-1"]}, {:ok, {:refused, %{"exit" => 2}}}},
              {{:call, Tools, :seed_transition, ["os-1", "blocked", "tok-1", "plan:12"]},
-              {:ok, {:ok, %{"blocked_on" => "plan:12"}}}},
-             {:halt, 4}
-           ] = State.log()
+              {:ok, %{"blocked_on" => "plan:12"}}},
+             {:halt, {:halted, 4}}
+           ] = Enum.map(State.events("seed"), &Event.key/1)
   end
 
   test "a subagent may read but never claim, renew, or transition" do
@@ -82,15 +97,23 @@ defmodule Tiller.SeedTest do
         Driver.action(:seed_transition, ["os-1", "review", "tok-1"])
       ])
 
-    {:ok, pid} = Session.start_link(driver: FakeDriver, ctx: sub, whitelist: Actions.sub_whitelist())
-    assert {:halted, 3} = Session.run(pid)
+    {:ok, pid} =
+      Session.start_link(
+        driver: FakeDriver,
+        ctx: sub,
+        whitelist: Actions.sub_whitelist(),
+        id: "sub"
+      )
+
+    Session.run(pid)
+    assert {:halted, 3} = Session.await(pid)
 
     assert [
-             {_, {:ok, {:ok, %{"verb" => "get"}}}},
+             {_, {:ok, %{"verb" => "get"}}},
              {_, {:error, :not_whitelisted}},
              {_, {:error, :not_whitelisted}},
-             {:halt, 3}
-           ] = State.log()
+             {:halt, {:halted, 3}}
+           ] = Enum.map(State.events("sub"), &Event.key/1)
 
     # the card is still claimable: the subagent's refused claim never reached the port
     assert {:ok, %{"claim_token" => _}} = Tools.seed_claim("os-1")
@@ -106,8 +129,14 @@ defmodule Tiller.SeedTest do
   test "a dead engine surfaces as a transport error, contained by the session" do
     GenServer.stop(Seed)
     ctx = FakeDriver.context([Driver.action(:seed_ready, [])])
-    {:ok, pid} = Session.start_link(driver: FakeDriver, ctx: ctx)
-    assert {:halted, 1} = Session.run(pid)
-    assert [{_, {:error, {:error, %Seed.TransportError{reason: :not_started}, _}}}, {:halt, 1}] = State.log()
+    {:ok, pid} = Session.start_link(driver: FakeDriver, ctx: ctx, id: "dead")
+    Session.run(pid)
+    assert {:halted, 1} = Session.await(pid)
+
+    assert [
+             {_, {:error, {:error, %Seed.TransportError{reason: :not_started}, _}}},
+             {:halt, {:halted, 1}}
+           ] =
+             Enum.map(State.events("dead"), &Event.key/1)
   end
 end

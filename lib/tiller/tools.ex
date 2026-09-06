@@ -3,36 +3,111 @@ defmodule Tiller.Tools do
   The actual tools. Every function here is callable only if `{name, arity}`
   is in the running session's whitelist (`Tiller.Actions`).
 
-  The `seed_*` family talks to the open-seed engine through `Tiller.Seed`
-  (option 1 in docs/designs/open-seed-integration.md). Each returns
-  `{:ok, envelope}` or `{:refused, envelope}`: a refused verb is a result,
-  not a crash, so the log records exactly which exit class the port
-  returned (2 contention, 3 invalid transition, 6 fenced out, ...). The
-  actor is the client's; the claim token is explicit, because keeping it is
-  the driver's job (the port fences every later worker verb on it).
+  Failure modes are deliberately distinct so a counterfactual has something
+  to bite on:
+
+    * `echo/1`  no side effect, never fails
+    * `fail/0`  always crashes
+    * `put/2`, `get/1`  a key-value store; `get` of a missing key refuses
+    * `spend/1` a depleting budget; overspending refuses without depleting
+    * `flaky/1` crashes on every third call, stateful across the run
+    * `sleep/1` succeeds slowly, so branches finish at different times
+    * `seed_*` talk to the open-seed engine through `Tiller.Seed`; a
+      refused verb is `{:refused, envelope}`, a result, not a crash, so
+      the log records exactly which exit class the port returned (2
+      contention, 3 invalid transition, 6 fenced out, ...). A dead engine
+      is a transport error, contained like any tool crash.
   """
+
+  alias Tiller.ToolState
+
+  @sleep_cap_ms 1_000
 
   def echo(value), do: "echo: #{inspect(value)}"
   def fail(), do: raise("simulated tool crash")
 
+  @doc "Store a value. Later turns can `get` it."
+  def put(key, value) do
+    ToolState.put(key, value)
+    {:put, key}
+  end
+
+  @doc "Read a stored value as `{:ok, value}`, or refuse with `{:error, :not_found}`."
+  def get(key) do
+    case ToolState.fetch(key) do
+      {:ok, _} = ok -> ok
+      :error -> {:error, :not_found}
+    end
+  end
+
+  @doc "Spend from a fixed budget. Returns the remainder or `{:error, :budget_exceeded}`."
+  def spend(n) do
+    case ToolState.spend(n) do
+      {:ok, remaining} -> {:remaining, remaining}
+      {:error, _} = e -> e
+    end
+  end
+
+  @doc "Returns `value`, except every third call across the run raises."
+  def flaky(value) do
+    case ToolState.flaky_tick() do
+      {n, true} -> raise "flaky: call #{n} failed"
+      {_n, false} -> value
+    end
+  end
+
+  @doc "Sleep for `ms` (capped at #{@sleep_cap_ms}) and return how long it slept."
+  def sleep(ms) when is_integer(ms) and ms >= 0 do
+    slept = min(ms, @sleep_cap_ms)
+    Process.sleep(slept)
+    {:slept, slept}
+  end
+
   @doc """
-  Spawn a subagent under Tiller's supervisor (crash-isolated), run it to
-  halt, and return its turn count. A crash is contained: the caller gets
-  {:subagent_failed, reason} and the supervisor reaps the process.
+  Spawn a subagent under Tiller's supervisor (crash-isolated) and start it.
+  Returns immediately with `{:subagent_started, turn}`; the child's id is
+  `"<parent id>.<turn>"`, its trajectory lands in `Tiller.State` under that
+  id with this session as `parent_id`, and the parent receives
+  `{:subagent_halted, pid, turns}` when it halts. The result names the turn
+  rather than the id so a fork's spawn compares equal to the original's.
+  Re-running the turn after a kill finds the child already started and
+  reports the same. A failure to start is contained: the caller gets
+  {:subagent_failed, reason}.
   """
   def spawn_subagent(driver, ctx) do
     sup = Application.fetch_env!(:tiller, :supervisor)
+    parent_id = Tiller.Session.current_id()
+    turn = Tiller.Session.current_turn()
+    child_id = child_id(parent_id, turn)
 
-    case DynamicSupervisor.start_child(sup, Tiller.Session.child_spec(
-           driver: driver, ctx: ctx, whitelist: Tiller.Actions.sub_whitelist()
-         )) do
+    spec =
+      Tiller.Session.child_spec(
+        id: child_id,
+        parent_id: parent_id,
+        parent: self(),
+        driver: driver,
+        ctx: ctx,
+        whitelist: Tiller.Actions.sub_whitelist(),
+        tool_state: Tiller.ToolState.current()
+      )
+
+    case DynamicSupervisor.start_child(sup, spec) do
       {:ok, pid} ->
         Tiller.Session.run(pid)
-        {:subagent_done, pid}
+        {:subagent_started, turn}
 
-      {:error, reason} -> {:subagent_failed, reason}
+      {:error, {:already_started, _pid}} ->
+        {:subagent_started, turn}
+
+      {:error, reason} ->
+        {:subagent_failed, reason}
     end
   end
+
+  # Deterministic child ids: "<parent>.<turn>". Outside a session there is
+  # no turn, so fall back to a unique id.
+  defp child_id(nil, _turn), do: "s" <> Integer.to_string(System.unique_integer([:positive]))
+  defp child_id(parent_id, turn), do: parent_id <> "." <> Integer.to_string(turn)
 
   ## open-seed port verbs (read)
 
@@ -75,7 +150,14 @@ defmodule Tiller.Tools do
 
   @doc "Append evidence (kind: log | commit | pr | file)."
   def seed_attach_evidence(task, kind, ref, token),
-    do: seed("task_attach_evidence", %{task: task, actor: actor(), kind: kind, ref: ref, token: token})
+    do:
+      seed("task_attach_evidence", %{
+        task: task,
+        actor: actor(),
+        kind: kind,
+        ref: ref,
+        token: token
+      })
 
   @doc "Append a comment to a card."
   def seed_comment(task, body, token),

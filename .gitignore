@@ -1,4 +1,17 @@
-_build/
-deps/
-*.ez
+# Mix build and dependency output
+/_build/
+/deps/
+/cover/
+/doc/
+/.fetch
+
+# Crash dumps and compiled artifacts
 erl_crash.dump
+*.ez
+*.beam
+
+# Hex release tarball
+/tiller-*.tar
+
+# Temporary files, e.g. from tests
+/tmp/

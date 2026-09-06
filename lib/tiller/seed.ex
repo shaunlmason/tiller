@@ -82,8 +82,7 @@ defmodule Tiller.Seed do
     with {:ok, exe} <- resolve(hd(argv), dir),
          port <- open_port(exe, tl(argv), dir),
          {:ok, _} <- handshake(port) do
-      {:ok,
-       %{port: port, actor: actor, timeout: timeout, next_id: 1, pending: %{}, buf: ""}}
+      {:ok, %{port: port, actor: actor, timeout: timeout, next_id: 1, pending: %{}, buf: ""}}
     else
       {:error, reason} -> {:stop, {:seed_start_failed, reason}}
     end
@@ -100,7 +99,10 @@ defmodule Tiller.Seed do
   end
 
   def handle_call({:call, tool, args, timeout}, from, s) do
-    params = %{name: to_string(tool), arguments: Map.new(args, fn {k, v} -> {to_string(k), v} end)}
+    params = %{
+      name: to_string(tool),
+      arguments: Map.new(args, fn {k, v} -> {to_string(k), v} end)
+    }
 
     send_request(s, "tools/call", params, from, &decode_tool_result/1, timeout || s.timeout)
   end
@@ -126,7 +128,9 @@ defmodule Tiller.Seed do
 
   def handle_info({:timeout, id}, s) do
     case Map.pop(s.pending, id) do
-      {nil, _} -> {:noreply, s}
+      {nil, _} ->
+        {:noreply, s}
+
       {{from, _decode, _timer}, pending} ->
         GenServer.reply(from, {:error, {:timeout, id}})
         {:noreply, %{s | pending: pending}}
@@ -171,7 +175,9 @@ defmodule Tiller.Seed do
     end
   end
 
-  defp reply_for(%{"error" => %{"code" => code, "message" => m}}, _decode), do: {:error, {:rpc, code, m}}
+  defp reply_for(%{"error" => %{"code" => code, "message" => m}}, _decode),
+    do: {:error, {:rpc, code, m}}
+
   defp reply_for(msg, decode), do: decode.(msg)
 
   # tools/call results wrap one text content item holding the port

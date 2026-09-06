@@ -6,10 +6,17 @@ defmodule Tiller.Driver do
   action (a quoted MFA term) and its updated context, or :halt. The Session
   stores the context between turns; a real LLM driver uses it for conversation
   state. Nothing else in the harness changes when you swap drivers.
+
+  A driver may also return `{:replay, action, result, ctx}`: the Session
+  records the action with that result and does not evaluate it. Only
+  `Tiller.Driver.Replay` does this; it is how a recorded prefix is replayed
+  without re-running its tools.
   """
 
   @callback next_action(ctx :: term()) ::
-              {:action, term(), ctx :: term()} | :halt
+              {:action, term(), ctx :: term()}
+              | {:replay, term(), Tiller.Event.result(), ctx :: term()}
+              | :halt
 
   @doc "Build a quoted action term: the grammar is the capability boundary."
   def action(f, args \\ []), do: {:call, Tiller.Tools, f, args}

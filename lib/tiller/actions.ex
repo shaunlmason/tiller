@@ -3,15 +3,25 @@ defmodule Tiller.Actions do
   Action registry. The whitelist *is* the capability boundary: an agent can
   only call what its session's whitelist allows. Subagents get a smaller
   whitelist and never get `spawn_subagent` (depth limit).
-
-  The open-seed split mirrors the port's own rule that a sub-agent inherits
-  its parent's claim: the root session holds the worker verbs (claim,
-  renew, release, transition, evidence, comment); a subagent may only read
-  (`seed_ready`, `seed_get`). Operator verbs (accept, reject, close, ...)
-  are on no whitelist at all: they are a human's, and the engine checks
-  its roster regardless.
   """
 
+  # Tools every session gets. Each has an observable side effect or a
+  # distinct failure mode, so mutating one branch's whitelist or result
+  # changes what later turns can do.
+  @base_tools [
+    {:echo, 1},
+    {:fail, 0},
+    {:put, 2},
+    {:get, 1},
+    {:spend, 1},
+    {:flaky, 1},
+    {:sleep, 1}
+  ]
+
+  # open-seed port verbs (`Tiller.Seed`). The split mirrors the port's own
+  # rule that a sub-agent inherits its parent's claim: the root session holds
+  # the worker verbs; a subagent may only read. Operator verbs (accept,
+  # reject, close, ...) are on no whitelist at all: they are a human's.
   @seed_read [
     {:seed_ready, 0},
     {:seed_get, 1}
@@ -28,16 +38,8 @@ defmodule Tiller.Actions do
     {:seed_comment, 3}
   ]
 
-  @root_tools [
-    {:echo, 1},
-    {:fail, 0},
-    {:spawn_subagent, 2}
-  ] ++ @seed_read ++ @seed_worker
-
-  @sub_tools [
-    {:echo, 1},
-    {:fail, 0}
-  ] ++ @seed_read
+  @root_tools @base_tools ++ [{:spawn_subagent, 2}] ++ @seed_read ++ @seed_worker
+  @sub_tools @base_tools ++ @seed_read
 
   def root_whitelist, do: @root_tools
   def sub_whitelist, do: @sub_tools
@@ -51,11 +53,22 @@ defmodule Tiller.Actions do
   @doc """
   Evaluate a quoted MFA action `{:call, m, f, args}` against a whitelist.
   Returns {:ok, result} | {:error, reason} — never raises.
+
+  A tool returns `{:ok, value}` or `{:error, reason}`, which pass through
+  unchanged, or a bare value, which is wrapped as `{:ok, value}`. A tool
+  that hands back arbitrary stored data (`get/1`) must use the explicit
+  `{:ok, _}` form so a stored `{:error, _}` is not mistaken for a refusal.
+  A crash (raise/throw/exit) is captured with its stacktrace as
+  `{:error, {kind, reason, stacktrace}}`.
   """
   def eval({:call, _m, f, args}, whitelist) do
     if Enum.member?(whitelist, {f, length(args)}) do
       try do
-        {:ok, apply(Tiller.Tools, f, args)}
+        case apply(Tiller.Tools, f, args) do
+          {:ok, _} = ok -> ok
+          {:error, _} = err -> err
+          value -> {:ok, value}
+        end
       catch
         kind, reason -> {:error, {kind, reason, __STACKTRACE__}}
       end

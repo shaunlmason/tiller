@@ -4,26 +4,33 @@ defmodule Tiller.SeedIntegrationTest do
   use ExUnit.Case, async: false
   @moduletag :integration
 
-  alias Tiller.{Seed, State, Tools}
+  alias Tiller.{Seed, Tools}
 
   setup_all do
-    cmd = System.get_env("TILLER_SEED_CMD") || raise "set TILLER_SEED_CMD (e.g. \"scripts/seed mcp serve\")"
-    dir = System.get_env("TILLER_SEED_DIR") || raise "set TILLER_SEED_DIR (an instantiated open-seed repo)"
+    cmd =
+      System.get_env("TILLER_SEED_CMD") ||
+        raise "set TILLER_SEED_CMD (e.g. \"scripts/seed mcp serve\")"
+
+    dir =
+      System.get_env("TILLER_SEED_DIR") ||
+        raise "set TILLER_SEED_DIR (an instantiated open-seed repo)"
+
     {:ok, pid} = Seed.start_link(command: String.split(cmd), cd: dir, actor: "tiller")
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
     :ok
   end
 
   setup do
-    State.clear()
-    :ok
+    Tiller.reset()
   end
 
   test "claim / renew / fence / release against seed mcp serve" do
     {:ok, tools} = Seed.tools(Seed)
     assert "task_claim" in Enum.map(tools, & &1["name"])
 
-    {:ok, %{"task" => id}} = Seed.call(Seed, "task_create", %{title: "tiller integration", actor: "tiller"})
+    {:ok, %{"task" => id}} =
+      Seed.call(Seed, "task_create", %{title: "tiller integration", actor: "tiller"})
+
     # promote is an operator verb: the fixture puts "tiller" on the roster,
     # and it is deliberately not a Tiller.Tools function.
     {:ok, %{"state" => "ready"}} = Seed.call(Seed, "task_promote", %{task: id, actor: "tiller"})
