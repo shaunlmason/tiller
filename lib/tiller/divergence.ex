@@ -1,0 +1,46 @@
+defmodule Tiller.Divergence do
+  @moduledoc """
+  Where do two trajectories first differ?
+
+  A trajectory is a `Tiller.State` log: an ordered list of events, where an
+  event is `{action, result}` or the terminal `{:halt, turns}`. Two branches
+  forked from the same prefix share that prefix, so divergence is the first
+  index at which the two lists stop agreeing.
+
+  Events are compared structurally (`==`), so a different action, a different
+  result for the same action, or an early `:halt` all count as divergence.
+  When one branch simply has fewer events than the other (it is still running,
+  or died before logging `:halt`), the missing side is `nil`.
+
+  This is the go/no-go spike from `docs/design.md`: pure functions over lists,
+  no processes.
+  """
+
+  @type event :: {action :: term, result :: term} | {:halt, non_neg_integer}
+
+  @doc """
+  Return `:identical` when both trajectories agree event for event, otherwise
+  `{:diverged, index, left, right}` where `index` is the position of the first
+  disagreement and `left`/`right` are the events at that position (`nil` when
+  that side has no event there).
+
+      iex> Tiller.Divergence.first_diff([{:a, 1}, {:halt, 1}], [{:a, 1}, {:halt, 1}])
+      :identical
+
+      iex> Tiller.Divergence.first_diff([{:a, 1}, {:b, 2}], [{:a, 1}, {:b, 3}])
+      {:diverged, 1, {:b, 2}, {:b, 3}}
+
+      iex> Tiller.Divergence.first_diff([{:a, 1}], [{:a, 1}, {:b, 2}])
+      {:diverged, 1, nil, {:b, 2}}
+  """
+  @spec first_diff([event], [event]) ::
+          :identical
+          | {:diverged, index :: non_neg_integer, left :: event | nil, right :: event | nil}
+  def first_diff(left, right) when is_list(left) and is_list(right), do: walk(left, right, 0)
+
+  defp walk([], [], _i), do: :identical
+  defp walk([e | l], [e | r], i), do: walk(l, r, i + 1)
+  defp walk([l | _], [r | _], i), do: {:diverged, i, l, r}
+  defp walk([l | _], [], i), do: {:diverged, i, l, nil}
+  defp walk([], [r | _], i), do: {:diverged, i, nil, r}
+end
