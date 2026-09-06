@@ -6,6 +6,7 @@ defmodule Tiller.MixProject do
       app: :tiller,
       version: "0.1.0",
       elixir: "~> 1.20",
+      test_ignore_filters: [~r"^test/support/"],
       start_permanent: Mix.env() == :prod,
       deps: deps()
     ]

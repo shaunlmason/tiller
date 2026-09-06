@@ -1,8 +1,13 @@
 defmodule Tiller.Demo do
   @moduledoc """
-  End-to-end demo. Records a run (root spawns a subagent, a tool crashes),
-  then forks it at one turn into four racing branches, each with one thing
-  different, and reports where each first diverges from the original.
+  End-to-end demos.
+
+    * `run/0`: records a run (root spawns a subagent, a tool crashes), then
+      forks it at one turn into racing branches, each with one thing
+      different, and reports where each first diverges from the original.
+    * `seed/2`: the same loop driving open-seed through `Tiller.Seed`:
+      claim a ready card, renew, comment, release, and log the port's
+      answer to a stale token as data.
   """
 
   alias Tiller.{Actions, Divergence, Driver, Event, FakeDriver, Session, State}
@@ -77,6 +82,42 @@ defmodule Tiller.Demo do
       IO.puts("#{id} [#{inspect(m, limit: 3)}] finished ~#{ms}ms: #{verdict}")
     end
 
+    IO.puts("=== done ===")
+  end
+
+  @doc """
+  Drive the open-seed port. `opts` go to `Tiller.Seed.start_link/1`:
+  `cd:` an instantiated open-seed repo, `command:` (default
+  `["scripts/seed", "mcp", "serve"]`), `actor:`. `task` is a ready card id.
+
+      mix run -e 'Tiller.Demo.seed("os-1a2b3c4d", cd: "../my-seed-repo", actor: "tiller-1")'
+  """
+  def seed(task, opts) do
+    Tiller.reset()
+    {:ok, client} = Tiller.Seed.start_link(opts)
+
+    # The driver keeps the token: it is data the port handed back, and
+    # every later worker verb is fenced on it. A scripted driver cannot
+    # read its own log, so claim first and script the rest around it.
+    {:ok, %{"claim_token" => tok}} = Tiller.Tools.seed_claim(task)
+
+    ctx =
+      FakeDriver.context([
+        Driver.action(:seed_get, [task]),
+        # exit 6: fenced out, logged, not fatal
+        Driver.action(:seed_lease_renew, [task, "stale-token"]),
+        Driver.action(:seed_lease_renew, [task, tok]),
+        Driver.action(:seed_comment, [task, "tiller was here", tok]),
+        Driver.action(:seed_release, [task, tok])
+      ])
+
+    {:ok, pid} = Session.start_link(driver: FakeDriver, ctx: ctx, id: "seed")
+    Session.run(pid)
+    {:halted, _} = Session.await(pid)
+    GenServer.stop(client)
+
+    IO.puts("=== tiller seed demo: event log ===")
+    print_events(State.events("seed"))
     IO.puts("=== done ===")
   end
 
