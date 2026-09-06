@@ -19,10 +19,13 @@ defmodule Tiller.Demo do
       Tiller.Driver.action(:fail, [])  # tool crashes; must become data, not kill the session
     ])
 
-    {:ok, pid} =
-      Tiller.Session.start_link(driver: Tiller.FakeDriver, ctx: root_ctx)
+    {:ok, pid} = Tiller.Session.start_link(driver: Tiller.FakeDriver, ctx: root_ctx, id: "root")
+    {:halted, _} = Tiller.Session.run_to_halt(pid)
 
-    Tiller.Session.run(pid)
+    # the subagent runs concurrently; wait for it before printing
+    for %Tiller.Event{result: {:ok, {:subagent_started, sub, _}}} <- Tiller.State.events("root"),
+        do: Tiller.Session.await(sub)
+
     print_log("tiller demo")
   end
 
@@ -50,17 +53,17 @@ defmodule Tiller.Demo do
       Tiller.Driver.action(:seed_release, [task, tok])
     ])
 
-    {:ok, pid} = Tiller.Session.start_link(driver: Tiller.FakeDriver, ctx: ctx)
-    Tiller.Session.run(pid)
+    {:ok, pid} = Tiller.Session.start_link(driver: Tiller.FakeDriver, ctx: ctx, id: "root")
+    {:halted, _} = Tiller.Session.run_to_halt(pid)
     GenServer.stop(client)
     print_log("tiller seed demo")
   end
 
   defp print_log(title) do
-    IO.puts("=== #{title}: action log ===")
+    IO.puts("=== #{title}: event log (seq session/turn) ===")
 
-    for {a, r} <- Tiller.State.log() do
-      IO.puts(inspect(a))
+    for %Tiller.Event{seq: seq, session_id: sid, turn: t, action: a, result: r} <- Tiller.State.events() do
+      IO.puts("#{seq} #{sid}/#{t} " <> inspect(a))
       IO.puts("  -> " <> inspect(r, limit: 12))
     end
 

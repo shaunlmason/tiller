@@ -62,7 +62,7 @@ defmodule Tiller.SeedTest do
       ])
 
     {:ok, pid} = Session.start_link(driver: FakeDriver, ctx: ctx)
-    assert {:halted, 4} = Session.run(pid)
+    assert {:halted, 4} = Session.run_to_halt(pid)
 
     assert [
              {{:call, Tools, :seed_ready, []}, {:ok, {:ok, %{"verb" => "ready"}}}},
@@ -83,7 +83,7 @@ defmodule Tiller.SeedTest do
       ])
 
     {:ok, pid} = Session.start_link(driver: FakeDriver, ctx: sub, whitelist: Actions.sub_whitelist())
-    assert {:halted, 3} = Session.run(pid)
+    assert {:halted, 3} = Session.run_to_halt(pid)
 
     assert [
              {_, {:ok, {:ok, %{"verb" => "get"}}}},
@@ -107,7 +107,7 @@ defmodule Tiller.SeedTest do
     GenServer.stop(Seed)
     ctx = FakeDriver.context([Driver.action(:seed_ready, [])])
     {:ok, pid} = Session.start_link(driver: FakeDriver, ctx: ctx)
-    assert {:halted, 1} = Session.run(pid)
+    assert {:halted, 1} = Session.run_to_halt(pid)
     assert [{_, {:error, {:error, %Seed.TransportError{reason: :not_started}, _}}}, {:halt, 1}] = State.log()
   end
 end

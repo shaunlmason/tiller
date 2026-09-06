@@ -336,9 +336,40 @@ Also landed, because the Types section says they come first:
 is written once against the attributed shape and runs on today's raw
 `{action, result}` log too. Nothing writes events yet; steps 4 and 5 do.
 
-Next: step 2 (real tools; the `seed_*` verbs from
-docs/designs/open-seed-integration.md already supply four with distinct
-failure modes), then steps 3 to 6 as the foundation slice.
+## Foundation slice (2026-09-06): steps 2 to 6 done
+
+- **Step 2, real tools:** met by the `seed_*` verbs
+  (docs/designs/open-seed-integration.md). Four worker verbs with four
+  distinct, engine-decided failure modes: contention (2), invalid
+  transition (3), not found (4), fenced out (6). No local stand-ins
+  were added; the mock server in `test/support/` scripts those refusals
+  for engine-free runs.
+- **Step 3, types:** `Tiller.Event` (`lib/tiller/event.ex`) and the
+  `Tiller.Mutation.t` type (`lib/tiller/mutation.ex`, type only;
+  `plumbed?/1` names the two axes `Session` options already express).
+- **Step 4, invert Session:** `run/1` is a cast, one turn per `:turn`
+  message; `await/2` is built on `State.subscribe/1`; `run_to_halt/2` is
+  the synchronous convenience. `spawn_subagent` no longer calls
+  `Session.run/1` synchronously: it returns `{:subagent_started, pid,
+  session_id}` and the parent keeps taking turns; the child's events
+  carry `parent_id`. Inside a tool the session's id comes from
+  `Session.current_id/0` (process dictionary), because a tool runs in
+  the session process and cannot `call` it.
+- **Step 5, State:** an attributed ordered event store, newest-first
+  internally (the O(n) append is gone), `events/1` per session,
+  `events/0` in `seq` order, `log/1` as the human `{action, result}`
+  projection. **Deviation, declared:** `subscribe/1` dispatches through a
+  `Registry` (zero dependencies) rather than `Phoenix.PubSub`. Same
+  message shape, same seam; step 9 swaps the transport when Phoenix
+  arrives, and nothing above `State.subscribe/1` changes.
+- **Step 6, tests and demo:** `test/tiller_test.exs` rewritten against
+  `run_to_halt/2`, `await/2`, and `%Tiller.Event{}`; `Tiller.Demo.run/0`
+  prints the interleaved event log, where the subagent's first turn
+  lands before the parent's own spawn record because the parent no
+  longer waits.
+
+Next: step 7, `Tiller.Driver.Replay`, which is blocked on open question
+2 (delegate ctx hand-off). Decide that first.
 
 ## What I noticed about how you think
 

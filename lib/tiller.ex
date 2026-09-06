@@ -16,6 +16,7 @@ defmodule Tiller do
   def start(_type, _args) do
     children =
       [
+        Tiller.State.registry_spec(),
         Tiller.State,
         %{
           id: Tiller.Supervisor,

@@ -27,16 +27,27 @@ us lisptc's three claims with no runtime to maintain:
 
 ```
 Tiller (DynamicSupervisor)
-├─ Tiller.State            ← shared action log (GenServer, plain list)
-├─ Session (root)          ← you drive; tools: echo, spawn_subagent
+├─ Tiller.State            ← attributed event store (seq, session, parent, turn)
+├─ Session (root)          ← you drive; tools: echo, spawn_subagent, seed_*
 │   └─ Session (subagent)  ← LLM/fake-driven; smaller whitelist, no spawn
 └─ Session (other tasks)
 ```
 
-- **Session** (`Tiller.Session`): one GenServer per run. Loop: ask driver for
-  next action → evaluate against tool whitelist → append to `Tiller.State` →
-  repeat until `:halt`. Crashes are contained; a dead subagent hands its parent
-  a `{:subagent, pid, :crash}` value and nothing else dies.
+- **Session** (`Tiller.Session`): one GenServer per run, one turn per
+  message. `run/1` is a cast; each turn asks the driver for the next action,
+  evaluates it against the whitelist, appends a `Tiller.Event`, and schedules
+  the next turn, so the process is observable between turns. `await/2`
+  blocks on the halt event via `State.subscribe/1`. Crashes are contained: a
+  tool that raises becomes `{:error, _}` in the log; a subagent runs
+  concurrently under the supervisor and its parent keeps taking turns.
+- **State** (`Tiller.State`): every session's every turn as a `Tiller.Event`
+  with a global monotonic `seq`. `events(id)` is one trajectory;
+  `Enum.take(events(id), n)` is the state at turn n, which is why forking
+  needs no checkpointer. `subscribe(id | :all)` delivers each event live.
+- **Divergence** (`Tiller.Divergence`): where two trajectories first part
+  ways. A prefix walk with a normalizing equality (pids, refs, and stack
+  traces are not divergence). The go/no-go spike for
+  [the butterfly lab](docs/designs/agent-butterfly-lab.md); it passed.
 - **Driver** (`Tiller.Driver` behaviour): the only seam for "where the next
   action comes from". `Tiller.FakeDriver` scripts a list of actions for
   tests/demos. A real LLM driver (grammar-constrained decode → quoted term)
@@ -58,10 +69,11 @@ Tiller (DynamicSupervisor)
 
 - Actions are flat MFA terms, no macros/macros-as-prompts. Add when a real
   LLM driver needs composability the whitelist can't express.
-- `Tiller.State` is an in-memory list, not ETS/Ecto. Add persistence when
-  you need replay across restarts.
-- One loop = synchronous turn-taking; no concurrent tool calls per turn.
-  Add `Task.async_stream` when a single turn needs fan-out.
+- `Tiller.State` is in-memory, not ETS/Ecto. Add persistence when you need
+  replay across restarts.
+- One turn per message; no concurrent tool calls within a turn. Add
+  `Task.async_stream` when a single turn needs fan-out. Sessions themselves
+  run concurrently.
 - No real LLM driver yet. The FakeDriver is the contract.
 
 ## Research
@@ -107,8 +119,8 @@ Projects looked at while shaping tiller, with the verdict on each.
 
 ## Status
 
-Scaffold: Mix project, State, Actions, FakeDriver, Session, supervisor,
-test + demo, plus the open-seed client. Run:
+Foundation for the butterfly lab: attributed event store, async sessions,
+`await/2`, divergence analysis, and the open-seed client. Run:
 
 ```sh
 mix test
