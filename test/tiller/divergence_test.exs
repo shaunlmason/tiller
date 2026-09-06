@@ -43,6 +43,25 @@ defmodule Tiller.DivergenceTest do
     assert {:diverged, 1, @echo_bye, nil} = Divergence.first_diff(right, [@echo_hi])
   end
 
+  test "events are compared on action and result, not branch identity" do
+    alias Tiller.Event
+
+    {a, r} = @echo_hi
+    left = [%Event{seq: 1, session_id: "a", parent_id: nil, turn: 0, action: a, result: r}]
+    right = [%Event{seq: 7, session_id: "b", parent_id: "a", turn: 0, action: a, result: r}]
+
+    assert :identical = Divergence.first_diff(left, right)
+
+    left_halt = left ++ [Event.halt(2, "a", nil, 1)]
+    {a2, r2} = @echo_bye
+
+    right_more =
+      right ++ [%Event{seq: 8, session_id: "b", parent_id: "a", turn: 1, action: a2, result: r2}]
+
+    assert {:diverged, 1, %Event{action: :halt}, %Event{action: ^a2}} =
+             Divergence.first_diff(left_halt, right_more)
+  end
+
   test "identical trajectories" do
     run = [@echo_hi, @echo_bye, {:halt, 2}]
     assert :identical = Divergence.first_diff(run, run)

@@ -2,21 +2,24 @@ defmodule Tiller.Divergence do
   @moduledoc """
   Where do two trajectories first differ?
 
-  A trajectory is a `Tiller.State` log: an ordered list of events, where an
-  event is `{action, result}` or the terminal `{:halt, turns}`. Two branches
-  forked from the same prefix share that prefix, so divergence is the first
-  index at which the two lists stop agreeing.
+  A trajectory is an ordered list of events: `Tiller.Event` structs, or the
+  bare `{action, result}` / `{:halt, turns}` tuples the current
+  `Tiller.State` log records. Two branches forked from the same prefix share
+  that prefix, so divergence is the first index at which the two lists stop
+  agreeing.
 
-  Events are compared structurally (`==`), so a different action, a different
-  result for the same action, or an early `:halt` all count as divergence.
-  When one branch simply has fewer events than the other (it is still running,
-  or died before logging `:halt`), the missing side is `nil`.
+  Events are compared on `Tiller.Event.key/1`, the action and its result,
+  never on branch identity (`seq`, `session_id`, `parent_id`), which differs
+  between branches by construction. A different action, a different result
+  for the same action, or an early halt all count as divergence. When one
+  branch simply has fewer events than the other (it is still running, or
+  died before logging its halt), the missing side is `nil`.
 
   This is the go/no-go spike from `docs/design.md`: pure functions over lists,
   no processes.
   """
 
-  @type event :: {action :: term, result :: term} | {:halt, non_neg_integer}
+  @type event :: Tiller.Event.t() | {action :: term, result :: term} | {:halt, non_neg_integer}
 
   @doc """
   Return `:identical` when both trajectories agree event for event, otherwise
@@ -39,8 +42,13 @@ defmodule Tiller.Divergence do
   def first_diff(left, right) when is_list(left) and is_list(right), do: walk(left, right, 0)
 
   defp walk([], [], _i), do: :identical
-  defp walk([e | l], [e | r], i), do: walk(l, r, i + 1)
-  defp walk([l | _], [r | _], i), do: {:diverged, i, l, r}
+
+  defp walk([l | lt], [r | rt], i) do
+    if Tiller.Event.key(l) == Tiller.Event.key(r),
+      do: walk(lt, rt, i + 1),
+      else: {:diverged, i, l, r}
+  end
+
   defp walk([l | _], [], i), do: {:diverged, i, l, nil}
   defp walk([], [r | _], i), do: {:diverged, i, nil, r}
 end
