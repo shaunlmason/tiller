@@ -44,8 +44,13 @@ Tiller (DynamicSupervisor)
 - **Event** (`Tiller.Event`): `{seq, session_id, parent_id, turn, action,
   result}`. Subagent ids are deterministic (`"root.0"`), so trajectories
   compare across runs. `Tiller.Divergence.first_diff/2` finds the first turn
-  where two of them disagree; `Tiller.Mutation` names the ways a forked
-  branch may differ.
+  where two of them disagree.
+- **Fork** (`Tiller.Session.fork/4`): start a branch from any turn of a
+  session with one `Tiller.Mutation` (or none, for a control). The branch
+  replays the prefix with recorded results (`Tiller.Driver.Replay`), starts
+  from the tool-state snapshot taken at that turn, then continues with the
+  source's driver and context as they were, or with what the mutation says.
+  Branches run under the supervisor and race; `Tiller.Demo.run/0` shows four.
 - **Driver** (`Tiller.Driver` behaviour): the only seam for "where the next
   action comes from". `Tiller.FakeDriver` scripts a list of actions for
   tests/demos. A real LLM driver (grammar-constrained decode → quoted term)
@@ -93,9 +98,10 @@ Projects looked at while shaping tiller, with the verdict on each.
 
 ## Status
 
-Foundation for the butterfly lab in `docs/design.md`: attributed event store,
-async sessions, six tools, divergence, mutation vocabulary. Next: replay
-driver, fork, LiveView. Run:
+Butterfly lab core from `docs/design.md`, minus the screen: attributed event
+store, async sessions, six tools, replay, fork with four of five mutation
+axes (`kill_at` is refused, see Open Question 5), concurrent branch race,
+first-divergence report. Next: LiveView. Run:
 
 ```sh
 mix test

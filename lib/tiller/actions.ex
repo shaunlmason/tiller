@@ -128,7 +128,8 @@ defmodule Tiller.Tools do
         parent: self(),
         driver: driver,
         ctx: ctx,
-        whitelist: Tiller.Actions.sub_whitelist()
+        whitelist: Tiller.Actions.sub_whitelist(),
+        tool_state: Tiller.ToolState.current()
       )
 
     case DynamicSupervisor.start_child(sup, spec) do

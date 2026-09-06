@@ -6,6 +6,22 @@ defmodule Tiller do
 
   use Application
 
+  @doc """
+  Back to a blank slate: stop every supervised session (subagents, forks),
+  drop all events, reset the global tool state. Tests and the demo call this.
+  """
+  def reset do
+    sup = Tiller.Supervisor
+
+    for {_, pid, _, _} <- DynamicSupervisor.which_children(sup), is_pid(pid) do
+      DynamicSupervisor.terminate_child(sup, pid)
+    end
+
+    Tiller.State.clear()
+    Tiller.ToolState.reset()
+    :ok
+  end
+
   @impl true
   def start(_type, _args) do
     children = [

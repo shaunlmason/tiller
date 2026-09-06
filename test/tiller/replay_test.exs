@@ -5,9 +5,7 @@ defmodule Tiller.Driver.ReplayTest do
   alias Tiller.Driver.Replay
 
   setup do
-    State.clear()
-    ToolState.reset()
-    :ok
+    Tiller.reset()
   end
 
   defp record(id, actions) do

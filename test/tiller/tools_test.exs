@@ -4,9 +4,7 @@ defmodule Tiller.ToolsTest do
   alias Tiller.{Driver, FakeDriver, Session, State, ToolState}
 
   setup do
-    State.clear()
-    ToolState.reset()
-    :ok
+    Tiller.reset()
   end
 
   defp run(actions) do

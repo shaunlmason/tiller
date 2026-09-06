@@ -1,12 +1,10 @@
 defmodule TillerTest do
   use ExUnit.Case, async: false
 
-  alias Tiller.{Actions, Driver, Event, FakeDriver, Session, State, ToolState, Tools}
+  alias Tiller.{Actions, Driver, Event, FakeDriver, Session, State, Tools}
 
   setup do
-    State.clear()
-    ToolState.reset()
-    :ok
+    Tiller.reset()
   end
 
   test "echo round-trips through state as an attributed event" do
