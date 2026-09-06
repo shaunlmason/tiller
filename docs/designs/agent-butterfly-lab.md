@@ -313,6 +313,33 @@ butterfly, which needs no divergence analysis to be interesting.
 
 Do the spike first. It is a go/no-go, and it costs half an hour.
 
+## Spike result (2026-09-06): GO
+
+`Tiller.Divergence.first_diff/2` exists (`lib/tiller/divergence.ex`) with
+the three assigned cases plus five more in `test/divergence_test.exs`. It
+was obviously right well inside the 30 minutes, for a reason the
+assignment hinted at: a branch forked at turn N shares its parent's first
+N events by construction, so "first divergent event" is a prefix walk, not
+a sequence alignment. An inserted turn IS the divergence; there is no edit
+distance to compute. Approach D stands.
+
+The one real decision was the equality projection. Raw `==` calls two
+branches divergent because a subagent got a different pid or a crash's
+stack trace lists a different line, so `normalize/1` erases pids, refs,
+ports, funs, and the stack trace inside `{:error, {kind, reason, st}}`,
+and `key:` lets a caller project further (a seed envelope's timestamps).
+This is the seam open question 3 (incommensurable axes) will eventually
+hang from, and it is unchanged by that question.
+
+Also landed, because the Types section says they come first:
+`Tiller.Event` (`lib/tiller/event.ex`) with `from_log/2`, so the analysis
+is written once against the attributed shape and runs on today's raw
+`{action, result}` log too. Nothing writes events yet; steps 4 and 5 do.
+
+Next: step 2 (real tools; the `seed_*` verbs from
+docs/designs/open-seed-integration.md already supply four with distinct
+failure modes), then steps 3 to 6 as the foundation slice.
+
 ## What I noticed about how you think
 
 - You wrote "Deliberate limits (upgrade paths)" as a first-class README section
