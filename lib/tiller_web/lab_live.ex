@@ -183,6 +183,16 @@ defmodule TillerWeb.LabLive do
     :exit, _ -> %{}
   end
 
+  # what a session should be compared against: a resumed session inherits
+  # the comparison target of the session it resumed, not the dead session
+  defp compare_parent(id) do
+    case meta(id) do
+      %{resumed_from: from} when not is_nil(from) -> compare_parent(from)
+      %{parent_id: p} -> p
+      _ -> nil
+    end
+  end
+
   defp lineage_text(id) do
     case meta(id) do
       %{resumed_from: from} when not is_nil(from) -> "resumed from #{from}"
@@ -263,12 +273,12 @@ defmodule TillerWeb.LabLive do
               %{mutation: m, fork_turn: t} when not is_nil(m) -> "fork@#{t} #{Mutation.label(m)}"
               _ -> ""
             end}
-            <span class={"verdict #{verdict_class(live_verdict(@events, id, parent_id))}"}>{verdict_text(live_verdict(@events, id, parent_id))}</span>
+            <span class={"verdict #{verdict_class(live_verdict(@events, id, compare_parent(id)))}"}>{verdict_text(live_verdict(@events, id, compare_parent(id)))}</span>
           </div>
           <div class="turns">
             <span
               :for={ev <- evs}
-              class={"turn #{kind(ev)} #{if @selected == {id, ev.turn}, do: "selected"} #{if diverge_turn(live_verdict(@events, id, parent_id)) == ev.turn, do: "diverge"}"}
+              class={"turn #{kind(ev)} #{if @selected == {id, ev.turn}, do: "selected"} #{if diverge_turn(live_verdict(@events, id, compare_parent(id))) == ev.turn, do: "diverge"}"}
               phx-click="select"
               phx-value-session={id}
               phx-value-turn={ev.turn}

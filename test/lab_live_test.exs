@@ -68,6 +68,9 @@ defmodule TillerWeb.LabLiveTest do
     assert html =~ ~r/root-\d+\/f1-\d+ -&gt; root-\d+\/f1-\d+\/r\d+/
     assert html =~ "resumed from"
     assert html =~ ">dead<"
+    # the resumed session is judged against the root, not the dead branch it resumed
+    [resumed_block] = Regex.run(~r/<div class="session" id="session-[^"]+\/r\d+">.*?<\/div><\/div>/s, html)
+    assert resumed_block =~ "verdict identical"
     # the branches are on the timeline, attributed to the root
     assert html =~ "forked from #{root_id}"
     # the first divergence is marked on a chip

@@ -38,8 +38,9 @@ defmodule TillerWeb.Layouts do
           .kv { color:var(--dim); } .kv b { color:var(--fg); font-weight:500; }
           label.m { display:block; margin:3px 0; cursor:pointer; }
           table { width:100%; border-collapse:collapse; margin-top:10px; }
-          td, th { text-align:left; padding:4px 6px; border-bottom:1px solid var(--line); vertical-align:top; overflow-wrap:anywhere; }
-          th { color:var(--dim); font-weight:500; }
+          td, th { text-align:left; padding:4px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
+          td { overflow-wrap:anywhere; }
+          th { color:var(--dim); font-weight:500; white-space:nowrap; }
           .verdict.identical { color:var(--ok); } .verdict.diverged { color:var(--div); } .verdict.pending { color:var(--dim); } .verdict.error { color:var(--err); }
           .legend span { display:inline-block; width:10px; height:10px; border-radius:2px; margin:0 4px 0 10px; vertical-align:middle; }
         </style>
