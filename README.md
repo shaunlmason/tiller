@@ -52,10 +52,19 @@ Tiller (DynamicSupervisor)
   from the tool-state snapshot taken at that turn, then continues with the
   source's driver and context as they were, or with what the mutation says.
   Branches run under the supervisor and race; `Tiller.Demo.run/0` shows four.
+- **Race** (`Tiller.Race`): ranks branches against the original. A mutation
+  is *decisive* if the branch ends somewhere else; the smallest decisive one
+  is the one whose trajectory differs in the fewest turns. Measured on the
+  log, so axes never need comparing.
+- **Kill** (`kill_at`): the branch runs the tool at turn N and dies before
+  logging it; the supervisor restart resumes it at N (snapshots live in
+  `Tiller.State`, branch tool state under `Tiller.ToolStates`) and runs the
+  tool again. Log shows it once, world saw it twice.
 - **Lab** (`TillerWeb.LabLive`): three panes. Timeline of the recorded run
   on the left (click a turn to pick the fork point), that turn across every
-  branch in the middle, the live race on the right with each branch's first
-  divergence. Fed entirely by `Tiller.State.subscribe/1`; nothing polls.
+  branch in the middle, and on the right a branch-by-turn grid ranked by
+  `Tiller.Race` with the smallest decisive mutation starred. Fed entirely by
+  `Tiller.State.subscribe/1`; nothing polls.
   Phoenix is the only reason the project is no longer dependency-free, and
   it stays out of `lib/tiller`.
 - **Driver** (`Tiller.Driver` behaviour): the only seam for "where the next
@@ -105,10 +114,10 @@ Projects looked at while shaping tiller, with the verdict on each.
 
 ## Status
 
-The MVP from `docs/design.md`: attributed event store, async sessions, six
-tools, replay, fork with four of five mutation axes (`kill_at` is refused,
-see Open Question 5), concurrent branch race, first-divergence report, and
-the LiveView lab. Run:
+`docs/design.md` MVP and stretch, all five open questions resolved: attributed
+event store, async sessions, six tools, replay, fork on all five mutation
+axes, concurrent race, first divergence, decisive-mutation ranking, and the
+LiveView lab with the branch-by-turn grid. Run:
 
 ```sh
 mix deps.get

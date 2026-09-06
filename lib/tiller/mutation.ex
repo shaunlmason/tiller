@@ -30,8 +30,22 @@ defmodule Tiller.Mutation do
   def mvp_axes, do: @mvp_axes
 
   @doc "The axis a mutation belongs to."
-  @spec axis(t) :: axis
+  @spec axis(t | nil) :: axis | nil
+  def axis(nil), do: nil
   def axis(m) when is_tuple(m), do: elem(m, 0)
+
+  @doc """
+  A size for ordering mutations *within one axis* only: tools removed from
+  the root whitelist, milliseconds of latency, and 1 for the rest. Sizes
+  on different axes are not comparable (Open Question 3 in the design);
+  `Tiller.Race` ranks by effect on the trajectory and uses this as the
+  final tiebreak inside an axis.
+  """
+  @spec size(t | nil) :: non_neg_integer
+  def size(nil), do: 0
+  def size({:whitelist, list}), do: abs(length(Tiller.Actions.root_whitelist()) - length(list))
+  def size({:latency, ms}), do: ms
+  def size(_other), do: 1
 
   @doc """
   Check a mutation's shape. Returns the mutation unchanged or a reason.

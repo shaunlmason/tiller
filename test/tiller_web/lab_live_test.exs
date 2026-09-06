@@ -36,7 +36,7 @@ defmodule TillerWeb.LabLiveTest do
     assert has_element?(view, "#turn-2.selected")
 
     render_click(view, "fork")
-    assert render(view) =~ "5 branches"
+    assert render(view) =~ "6 branches"
 
     wait_until(fn -> not (render(view) =~ "running") end)
     html = render(view)
@@ -44,9 +44,24 @@ defmodule TillerWeb.LabLiveTest do
     assert html =~ "identical"
     assert html =~ "diverged at turn 2"
     assert html =~ "diverged at turn 0"
-    assert has_element?(view, "[id='branch-root@2.1'] .bar.diverged")
-    assert has_element?(view, "[id='branch-root@2.0'] .bar.done")
     # middle pane: the whitelist branch differs at the selected turn
     assert html =~ "not_whitelisted"
+
+    # grid: one row per branch, one cell per turn, coloured by comparison
+    assert has_element?(view, "#grid [id='branch-root@2.1'] td.cell.diff")
+    assert has_element?(view, "#grid [id='branch-root@2.0'] td.cell.same")
+    refute has_element?(view, "#grid [id='branch-root@2.0'] td.cell.diff")
+
+    # ranking: the whitelist branch ended elsewhere with the fewest differing
+    # turns, so it is the smallest decisive mutation and sorts first
+    assert has_element?(view, "#grid tr.smallest[id='branch-root@2.1']")
+    assert has_element?(view, "#grid tbody tr:first-child[id='branch-root@2.1']")
+    assert html =~ "kill at t2, resume"
+
+    # picking a branch shows its card; clicking a cell selects that turn
+    render_click(view, "pick", %{"id" => "root@2.4"})
+    assert has_element?(view, "#picked", "root@2.4")
+    render_click(view, "select", %{"turn" => "0"})
+    assert render(view) =~ "Fork at turn 0"
   end
 end

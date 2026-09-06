@@ -41,6 +41,26 @@ defmodule Tiller.Divergence do
           | {:diverged, index :: non_neg_integer, left :: event | nil, right :: event | nil}
   def first_diff(left, right) when is_list(left) and is_list(right), do: walk(left, right, 0)
 
+  @doc """
+  How many positions differ between two trajectories: every index where
+  the keys disagree, plus every index one side has and the other lacks.
+  Zero means identical. Used to rank mutations by the size of their effect
+  rather than by any size of their own.
+
+      iex> Tiller.Divergence.distance([{:a, 1}, {:b, 2}], [{:a, 1}, {:b, 3}, {:c, 4}])
+      2
+  """
+  @spec distance([event], [event]) :: non_neg_integer
+  def distance(left, right) when is_list(left) and is_list(right), do: count(left, right, 0)
+
+  defp count([], [], n), do: n
+  defp count([], rest, n), do: n + length(rest)
+  defp count(rest, [], n), do: n + length(rest)
+
+  defp count([l | lt], [r | rt], n) do
+    count(lt, rt, if(Tiller.Event.key(l) == Tiller.Event.key(r), do: n, else: n + 1))
+  end
+
   defp walk([], [], _i), do: :identical
 
   defp walk([l | lt], [r | rt], i) do

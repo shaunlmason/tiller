@@ -40,6 +40,20 @@ defmodule TillerWeb.Layouts do
           .same { opacity: .55; }
           .diff { border-color: #ffb454; }
           .tag { font-size: 11px; color: #8b93a1; }
+          table.grid { border-collapse: separate; border-spacing: 2px; margin-bottom: 12px; }
+          table.grid th { font-weight: 500; color: #8b93a1; font-size: 11px; padding: 0 2px 4px; }
+          table.grid th.selected { color: #4f8cff; }
+          table.grid td.bid { padding-right: 8px; white-space: nowrap; cursor: pointer; }
+          table.grid td.bid:hover { color: #fff; }
+          table.grid tr.picked td.bid { color: #4f8cff; }
+          table.grid tr.smallest td.bid { color: #ffb454; }
+          table.grid td.cell { width: 22px; height: 18px; border-radius: 3px; cursor: pointer; background: #1c1f25; }
+          table.grid td.cell.same { background: #2f6b3f; }
+          table.grid td.cell.diff { background: #ffb454; }
+          table.grid td.cell.extra { background: #7c5cff; }
+          table.grid td.cell.missing { background: #1c1f25; }
+          table.grid td.cell:hover { outline: 1px solid #d7dae0; }
+          table.grid td.verdict { padding-left: 8px; white-space: nowrap; }
         </style>
       </head>
       <body>

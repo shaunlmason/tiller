@@ -245,6 +245,33 @@ building rather than watching. Chosen against the recommendation (C), knowingly.
    Replay problem. This is why the axis is costed High. Must be resolved before
    Next Step 10.
 
+### Resolutions (2026-09-06)
+
+1. **Tractable.** `Tiller.Divergence.first_diff/2` is five function clauses
+   over `Tiller.Event.key/1`; the spike passed well inside the budget.
+2. **Snapshots.** A session parks its driver context and tool state in
+   `Tiller.State` before every turn, so a fork already has the delegate's
+   context at the fork turn. Option 1 (context supplied at fork time) with
+   the supplying done by the session itself; no `resume_ctx/1` callback.
+3. **Measure the effect, not the mutation.** A mutation is *decisive* if the
+   branch ends somewhere else (different last action or result, or a
+   different turn count). Among decisive branches the smallest is the one
+   whose trajectory differs from the original in the fewest turns
+   (`Tiller.Divergence.distance/2`), later first divergence breaks ties, and
+   `Tiller.Mutation.size/1` breaks ties only within one axis. No cross-axis
+   weights. See `Tiller.Race`.
+4. **Grid.** The race pane is a branch-by-turn table: one row per branch,
+   one cell per turn coloured same, different, extra or missing. Rows are
+   ranked per (3), the smallest decisive mutation is starred, clicking a
+   cell selects that turn, clicking an id shows that branch's card.
+5. **Resume, and show the hazard.** Because snapshots live in the store, a
+   restarted session resumes at the turn that was in flight with the same
+   id and turn counter, and a branch's tool state (under
+   `Tiller.ToolStates`, unlinked from the session) survives the kill.
+   `kill_at N` runs the tool at turn N and dies before logging it; the
+   restart runs it again. The log shows the action once and the world saw
+   it twice, which is the at-least-once hazard of supervised agents.
+
 ## Success Criteria
 
 **MVP (this is "Done"):** pick a turn in a recorded run, fan out to at least 4
@@ -254,7 +281,8 @@ the turn at which they first diverged.
 
 **Stretch (explicitly not required for Done):** the `result_override`,
 `latency`, and `kill_at` axes; 32 concurrent branches and the layout problem
-that comes with them; ranking by smallest decisive mutation.
+that comes with them; ranking by smallest decisive mutation. *All shipped as
+of 2026-09-06; see Resolutions above.*
 
 Deliberately out of scope entirely: real LLM drivers, persistence across
 restarts, auth, generic serialization, production styling.
