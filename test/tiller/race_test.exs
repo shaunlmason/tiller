@@ -3,8 +3,6 @@ defmodule Tiller.RaceTest do
 
   alias Tiller.{Divergence, Driver, Race}
 
-  doctest Divergence
-
   @put {Driver.action(:put, [:k, 1]), {:ok, {:put, :k}}}
   @spend {Driver.action(:spend, [4]), {:ok, {:remaining, 6}}}
   @get {Driver.action(:get, [:k]), {:ok, 1}}

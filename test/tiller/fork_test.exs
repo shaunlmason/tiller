@@ -1,3 +1,10 @@
+defmodule Tiller.ForkTest.Crasher do
+  @moduledoc false
+  @behaviour Tiller.Driver
+  @impl true
+  def next_action(_ctx), do: raise("deterministic driver crash")
+end
+
 defmodule Tiller.ForkTest do
   use ExUnit.Case, async: false
 
@@ -116,6 +123,35 @@ defmodule Tiller.ForkTest do
 
     assert Enum.map(replayed, & &1.action) == Enum.map(original, & &1.action)
     assert ToolState.snapshot() == ToolState.snapshot(ToolState)
+  end
+
+  test "a control fork through a spawn turn stays identical" do
+    sub = FakeDriver.context([Driver.action(:echo, ["sub"])])
+
+    {orig, original} =
+      record("orig", [
+        Driver.action(:put, [:k, 1]),
+        Driver.action(:spawn_subagent, [FakeDriver, sub])
+      ])
+
+    assert {:halted, 1} = Session.await("orig.1")
+
+    {:ok, branch} = Session.fork(orig, 1, nil)
+    replayed = run_branch(branch)
+
+    assert :identical = Divergence.first_diff(original, replayed)
+    assert {:halted, 1} = Session.await("orig@1.0.1")
+  end
+
+  test "a branch that keeps crashing is halted after a few resumes, not restarted forever" do
+    {orig, _original} = record()
+    {:ok, branch} = Session.fork(orig, 1, {:driver, Tiller.ForkTest.Crasher, nil})
+    {:ok, id} = Session.id_of(branch)
+    Session.run(branch)
+
+    assert {:halted, 1} = Session.await(id)
+    assert %{resumed: true, status: {:halted, 1}} = Session.info(id)
+    assert Enum.count(State.events(id), &Event.halt?/1) == 1
   end
 
   test "branches race concurrently under the supervisor" do

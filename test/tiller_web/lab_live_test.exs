@@ -28,7 +28,7 @@ defmodule TillerWeb.LabLiveTest do
     assert html =~ "no run yet"
 
     render_click(view, "record")
-    wait_until(fn -> render(view) =~ "halt" and render(view) =~ "root.0" end)
+    wait_until(fn -> render(view) =~ "halt" and render(view) =~ "root.1" end)
     assert render(view) =~ "6 events recorded"
 
     render_click(view, "select", %{"turn" => "2"})

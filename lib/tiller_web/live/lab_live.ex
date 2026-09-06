@@ -90,6 +90,12 @@ defmodule TillerWeb.LabLive do
     end
   end
 
+  # Another viewer reset the store: our subscription is gone with it.
+  def handle_info({:tiller_reset}, socket) do
+    State.subscribe(:all)
+    {:noreply, assign(socket, events: [], selected: nil, picked: nil, branches: [])}
+  end
+
   defp absorb(%{id: id} = b, %Event{session_id: id} = e, assigns) do
     b = %{b | events: b.events ++ [e]}
 
@@ -159,8 +165,13 @@ defmodule TillerWeb.LabLive do
   @impl true
   def render(assigns) do
     root = root_events(assigns.events)
-    ranked = Race.rank(root, assigns.branches)
-    smallest = Race.smallest_decisive(root, assigns.branches)
+    # Rank only on verdicts: a half-run branch cannot be decisive yet.
+    ranked =
+      root
+      |> Race.rank(assigns.branches)
+      |> Enum.map(&%{&1 | decisive: &1.decisive and not is_nil(&1.verdict)})
+
+    smallest = Race.smallest_decisive(root, Enum.filter(assigns.branches, & &1.verdict))
     columns = Enum.max([length(root) | Enum.map(ranked, &length(&1.events))], fn -> 0 end)
 
     assigns =

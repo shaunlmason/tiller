@@ -80,8 +80,9 @@ Tiller (DynamicSupervisor)
 - Actions are flat MFA terms, no macros/macros-as-prompts. Add when a real
   LLM driver needs composability the whitelist can't express.
 - `Tiller.State` is an in-memory list, not ETS/Ecto. Add persistence when
-  you need replay across restarts. Subscriptions are a pid map in the
-  GenServer; swap in `Phoenix.PubSub` when LiveView arrives.
+  you need replay across restarts. Subscriptions are a monitored pid map in
+  the GenServer, deliberately not `Phoenix.PubSub`, so `lib/tiller` stays
+  free of Phoenix.
 - One turn per message, no concurrent tool calls within a turn.
   Add `Task.async_stream` when a single turn needs fan-out.
 - `spawn_subagent` starts the child and returns; there is no `await` tool

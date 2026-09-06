@@ -43,7 +43,7 @@ defmodule Tiller.Mutation do
   """
   @spec size(t | nil) :: non_neg_integer
   def size(nil), do: 0
-  def size({:whitelist, list}), do: abs(length(Tiller.Actions.root_whitelist()) - length(list))
+  def size({:whitelist, list}), do: length(Tiller.Actions.root_whitelist() -- list)
   def size({:latency, ms}), do: ms
   def size(_other), do: 1
 

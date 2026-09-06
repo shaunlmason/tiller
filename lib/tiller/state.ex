@@ -33,7 +33,7 @@ defmodule Tiller.State do
   @impl true
   def init(_), do: {:ok, initial()}
 
-  defp initial, do: %{seq: 0, events: [], subs: %{}, snapshots: %{}}
+  defp initial, do: %{seq: 0, events: [], subs: %{}, snapshots: %{}, resumes: %{}}
 
   @doc "Append an attributed event. Returns the stored event with its `seq`."
   @spec append(binary, binary | nil, non_neg_integer, Event.action() | :halt, Event.result()) ::
@@ -67,7 +67,14 @@ defmodule Tiller.State do
   @spec snapshot(binary, non_neg_integer) :: {:ok, map} | :error
   def snapshot(session_id, turn), do: GenServer.call(__MODULE__, {:snapshot, session_id, turn})
 
-  @doc "Reset (tests, demo). Drops events, snapshots and subscriptions."
+  @doc "Count a resume of `session_id` (a supervisor restart mid-run). Returns the new count."
+  @spec bump_resumes(binary) :: pos_integer
+  def bump_resumes(session_id), do: GenServer.call(__MODULE__, {:bump_resumes, session_id})
+
+  @doc """
+  Reset (tests, demo). Drops events, snapshots and subscriptions. Every
+  subscriber is told with `{:tiller_reset}` so it can resubscribe.
+  """
   def clear, do: GenServer.call(__MODULE__, :clear)
 
   @impl true
@@ -97,7 +104,14 @@ defmodule Tiller.State do
   end
 
   def handle_call({:subscribe, key, pid}, _from, s) do
-    {:reply, :ok, update_in(s.subs, &Map.update(&1, key, [pid], fn pids -> [pid | pids] end))}
+    pids = Map.get(s.subs, key, [])
+
+    if pid in pids do
+      {:reply, :ok, s}
+    else
+      Process.monitor(pid)
+      {:reply, :ok, put_in(s.subs[key], [pid | pids])}
+    end
   end
 
   def handle_call({:unsubscribe, key, pid}, _from, s) do
@@ -117,5 +131,18 @@ defmodule Tiller.State do
     {:reply, s.snapshots |> Map.get(session_id, %{}) |> Map.fetch(turn), s}
   end
 
-  def handle_call(:clear, _from, _s), do: {:reply, :ok, initial()}
+  def handle_call({:bump_resumes, session_id}, _from, s) do
+    s = update_in(s.resumes, &Map.update(&1, session_id, 1, fn n -> n + 1 end))
+    {:reply, s.resumes[session_id], s}
+  end
+
+  def handle_call(:clear, _from, s) do
+    for {_key, pids} <- s.subs, pid <- pids, do: send(pid, {:tiller_reset})
+    {:reply, :ok, initial()}
+  end
+
+  @impl true
+  def handle_info({:DOWN, _ref, :process, pid, _reason}, s) do
+    {:noreply, %{s | subs: Map.new(s.subs, fn {k, pids} -> {k, List.delete(pids, pid)} end)}}
+  end
 end

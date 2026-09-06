@@ -39,7 +39,9 @@ defmodule Tiller.Session do
   state. That turn runs again. Its tool already ran once before the kill,
   so the world sees the action twice while the log shows it once. That is
   the at-least-once hazard of supervised agents, and what `kill_at` exists
-  to expose.
+  to expose. A session that keeps dying in the same turn is resumed at most
+  three times, then halted where it stands, so a deterministic crash stays
+  one contained failure instead of a restart loop.
   """
   use GenServer
 
@@ -47,6 +49,8 @@ defmodule Tiller.Session do
   alias Tiller.Driver.Replay
 
   @type id :: binary
+
+  @max_resumes 3
 
   @impl true
   def init(opts) do
@@ -67,7 +71,6 @@ defmodule Tiller.Session do
       mutation: Keyword.get(opts, :mutation),
       turns: 0,
       status: :idle,
-      waiters: [],
       forks: 0,
       resumed: false
     }
@@ -85,8 +88,14 @@ defmodule Tiller.Session do
 
       {:resume, turn, snap} ->
         ToolState.bind(resume_tool_state(id, tool_opt, snap))
-        send(self(), :turn)
-        {:ok, %{s | ctx: snap.ctx, turns: turn, status: :running, resumed: true}}
+        s = %{s | ctx: snap.ctx, turns: turn, status: :running, resumed: true}
+
+        if state.bump_resumes(id) > @max_resumes do
+          {:ok, halt(s)}
+        else
+          send(self(), :turn)
+          {:ok, s}
+        end
     end
   end
 
@@ -189,6 +198,10 @@ defmodule Tiller.Session do
   @spec current_id() :: id | nil
   def current_id, do: Process.get(:tiller_session_id)
 
+  @doc "The turn the calling session is executing, if any."
+  @spec current_turn() :: non_neg_integer | nil
+  def current_turn, do: Process.get(:tiller_session_turn)
+
   @doc "Start the loop. Returns immediately; the run proceeds one turn per message."
   @spec run(pid | id) :: :ok
   def run(pid) when is_pid(pid), do: GenServer.cast(pid, :run)
@@ -218,7 +231,17 @@ defmodule Tiller.Session do
         end
 
       Tiller.State.unsubscribe(id)
+      flush(id)
       result
+    end
+  end
+
+  # Drop the session's other events that the subscription delivered to us.
+  defp flush(id) do
+    receive do
+      {:tiller_event, %Event{session_id: ^id}} -> flush(id)
+    after
+      0 -> :ok
     end
   end
 
@@ -327,6 +350,7 @@ defmodule Tiller.Session do
         {:noreply, halt(s)}
 
       {:action, a, ctx} ->
+        Process.put(:tiller_session_turn, s.turns)
         result = Tiller.Actions.eval(a, s.whitelist)
         maybe_die(s)
         record(s, a, result, ctx)
@@ -364,6 +388,6 @@ defmodule Tiller.Session do
   defp halt(s) do
     {:ok, _event} = s.state.append(s.id, s.parent_id, s.turns, :halt, {:halted, s.turns})
     if s.parent, do: send(s.parent, {:subagent_halted, self(), s.turns})
-    %{s | status: {:halted, s.turns}, waiters: []}
+    %{s | status: {:halted, s.turns}}
   end
 end

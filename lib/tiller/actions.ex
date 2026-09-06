@@ -28,15 +28,19 @@ defmodule Tiller.Actions do
   Evaluate a quoted MFA action `{:call, m, f, args}` against a whitelist.
   Returns {:ok, result} | {:error, reason} — never raises.
 
-  A tool may fail two ways and both land in the log as `{:error, _}`: it
-  returns `{:error, reason}` (a refusal, e.g. `:not_found`) or it crashes
-  (a raise/throw/exit, captured with its stacktrace).
+  A tool returns `{:ok, value}` or `{:error, reason}`, which pass through
+  unchanged, or a bare value, which is wrapped as `{:ok, value}`. A tool
+  that hands back arbitrary stored data (`get/1`) must use the explicit
+  `{:ok, _}` form so a stored `{:error, _}` is not mistaken for a refusal.
+  A crash (raise/throw/exit) is captured with its stacktrace as
+  `{:error, {kind, reason, stacktrace}}`.
   """
   def eval({:call, _m, f, args}, whitelist) do
     if Enum.member?(whitelist, {f, length(args)}) do
       try do
         case apply(Tiller.Tools, f, args) do
-          {:error, reason} -> {:error, reason}
+          {:ok, _} = ok -> ok
+          {:error, _} = err -> err
           value -> {:ok, value}
         end
       catch
@@ -78,10 +82,10 @@ defmodule Tiller.Tools do
     {:put, key}
   end
 
-  @doc "Read a stored value, or refuse with `{:error, :not_found}`."
+  @doc "Read a stored value as `{:ok, value}`, or refuse with `{:error, :not_found}`."
   def get(key) do
     case ToolState.fetch(key) do
-      {:ok, value} -> value
+      {:ok, _} = ok -> ok
       :error -> {:error, :not_found}
     end
   end
@@ -111,15 +115,20 @@ defmodule Tiller.Tools do
 
   @doc """
   Spawn a subagent under Tiller's supervisor (crash-isolated) and start it.
-  Returns immediately with the child's session id; the child's trajectory
-  lands in `Tiller.State` under that id with this session as `parent_id`,
-  and the parent receives `{:subagent_halted, pid, turns}` when it halts.
-  A failure to start is contained: the caller gets {:subagent_failed, reason}.
+  Returns immediately with `{:subagent_started, turn}`; the child's id is
+  `"<parent id>.<turn>"`, its trajectory lands in `Tiller.State` under that
+  id with this session as `parent_id`, and the parent receives
+  `{:subagent_halted, pid, turns}` when it halts. The result names the turn
+  rather than the id so a fork's spawn compares equal to the original's.
+  Re-running the turn after a kill finds the child already started and
+  reports the same. A failure to start is contained: the caller gets
+  {:subagent_failed, reason}.
   """
   def spawn_subagent(driver, ctx) do
     sup = Application.fetch_env!(:tiller, :supervisor)
     parent_id = Tiller.Session.current_id()
-    child_id = child_id(parent_id)
+    turn = Tiller.Session.current_turn()
+    child_id = child_id(parent_id, turn)
 
     spec =
       Tiller.Session.child_spec(
@@ -135,20 +144,18 @@ defmodule Tiller.Tools do
     case DynamicSupervisor.start_child(sup, spec) do
       {:ok, pid} ->
         Tiller.Session.run(pid)
-        {:subagent_started, child_id}
+        {:subagent_started, turn}
+
+      {:error, {:already_started, _pid}} ->
+        {:subagent_started, turn}
 
       {:error, reason} ->
         {:subagent_failed, reason}
     end
   end
 
-  # Deterministic child ids: "<parent>.<n>" for the nth child of a parent.
-  # Ids matter for divergence: a random id would make every spawn diverge.
-  defp child_id(nil), do: "s" <> Integer.to_string(System.unique_integer([:positive]))
-
-  defp child_id(parent_id) do
-    n = Process.get(:tiller_children, 0)
-    Process.put(:tiller_children, n + 1)
-    parent_id <> "." <> Integer.to_string(n)
-  end
+  # Deterministic child ids: "<parent>.<turn>". Outside a session there is
+  # no turn, so fall back to a unique id.
+  defp child_id(nil, _turn), do: "s" <> Integer.to_string(System.unique_integer([:positive]))
+  defp child_id(parent_id, turn), do: parent_id <> "." <> Integer.to_string(turn)
 end

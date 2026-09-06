@@ -33,12 +33,12 @@ defmodule Tiller.Demo do
 
   def run do
     Tiller.reset()
-    State.subscribe("root.0")
+    State.subscribe("root.1")
     pid = record()
     {:halted, _} = Session.await(pid)
 
     receive do
-      {:tiller_event, %Event{session_id: "root.0", action: :halt}} -> :ok
+      {:tiller_event, %Event{session_id: "root.1", action: :halt}} -> :ok
     after
       1_000 -> :ok
     end

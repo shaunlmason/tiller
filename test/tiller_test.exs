@@ -53,7 +53,7 @@ defmodule TillerTest do
 
     # The parent halts while the child is still sleeping.
     assert {:halted, 1} = Session.await(pid)
-    assert [%Event{result: {:ok, {:subagent_started, "root.0"}}}, _halt] = State.events("root")
+    assert [%Event{result: {:ok, {:subagent_started, 0}}}, _halt] = State.events("root")
     assert [] == Enum.filter(State.events("root.0"), &Event.halt?/1)
 
     assert_receive {:tiller_event, %Event{session_id: "root.0", action: :halt}}, 1_000

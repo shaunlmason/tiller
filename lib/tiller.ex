@@ -29,12 +29,22 @@ defmodule Tiller do
       Tiller.ToolState,
       {Registry, keys: :unique, name: Tiller.Registry},
       {DynamicSupervisor, strategy: :one_for_one, name: Tiller.ToolStates},
-      {Phoenix.PubSub, name: Tiller.PubSub},
       TillerWeb.Endpoint,
+      # Every kill_at branch is a deliberate restart, and a race can hold
+      # dozens of them, so the default 3-in-5s intensity would take down the
+      # whole race after four kills.
       %{
         id: Tiller.Supervisor,
         start:
-          {DynamicSupervisor, :start_link, [[strategy: :one_for_one, name: Tiller.Supervisor]]}
+          {DynamicSupervisor, :start_link,
+           [
+             [
+               strategy: :one_for_one,
+               name: Tiller.Supervisor,
+               max_restarts: 1_000,
+               max_seconds: 1
+             ]
+           ]}
       }
     ]
 
