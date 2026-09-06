@@ -44,6 +44,7 @@ defmodule Tiller.Driver.ReplayTest do
 
   test "replays a prefix, then the delegate takes over" do
     original = record("orig", @script)
+    ToolState.reset()
     delegate = FakeDriver.context([Driver.action(:echo, ["forked"])])
 
     replayed = replay("branch", Replay.context(original, FakeDriver, delegate, turn: 1))
@@ -53,7 +54,9 @@ defmodule Tiller.Driver.ReplayTest do
 
     assert fork == Driver.action(:echo, ["forked"])
     # Only the delegate's action ran; the replayed put did not touch ToolState.
-    assert [%Event{result: {:ok, {:put, :k}}}, %Event{result: {:ok, "echo: \"forked\""}}, _halt] = replayed
+    assert [%Event{result: {:ok, {:put, :k}}}, %Event{result: {:ok, "echo: \"forked\""}}, _halt] =
+             replayed
+
     assert ToolState.snapshot() == ToolState.initial()
   end
 
