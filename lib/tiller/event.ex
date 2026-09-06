@@ -10,10 +10,13 @@ defmodule Tiller.Event do
   on both.
 
   Halt records: `action` is `:halt`, `result` is `{:halted, turn_count}`.
+  `origin` is `:live` for a turn the session executed and `:replay` for
+  one a forked branch re-lived from its parent (`Tiller.Driver.Replay`).
+  Divergence ignores it: a replayed turn is the same turn.
   """
 
   @enforce_keys [:turn, :action, :result]
-  defstruct [:seq, :session_id, :parent_id, :turn, :action, :result]
+  defstruct [:seq, :session_id, :parent_id, :turn, :action, :result, origin: :live]
 
   @type action :: {:call, module, atom, [term]} | :halt
   @type result :: {:ok, term} | {:error, term} | {:halted, non_neg_integer}
@@ -24,7 +27,8 @@ defmodule Tiller.Event do
           parent_id: term,
           turn: non_neg_integer,
           action: action,
-          result: result
+          result: result,
+          origin: :live | :replay
         }
 
   @doc """

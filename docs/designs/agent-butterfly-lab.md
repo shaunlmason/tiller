@@ -368,8 +368,45 @@ is written once against the attributed shape and runs on today's raw
   lands before the parent's own spawn record because the parent no
   longer waits.
 
-Next: step 7, `Tiller.Driver.Replay`, which is blocked on open question
-2 (delegate ctx hand-off). Decide that first.
+## Steps 7 and 8 (2026-09-06): replay, fork, race
+
+**Open question 2, decided:** `Tiller.Driver` gains an optional
+`resume_ctx(initial_ctx, replayed_events)` callback. Only a driver can
+rebuild its own opaque context, so the driver is asked, with its initial
+context and the events the branch re-lived (overrides included: that is
+the past this branch experienced). A driver without the callback is
+handed its context exactly as supplied at fork time, so the caller
+positions it. `FakeDriver.resume_ctx/2` drops the replayed turns from
+the script; an LLM driver will rebuild its conversation from the events.
+
+- **Step 7, `Tiller.Driver.Replay`:** answers each prefix turn as
+  `{:replay, action, result, ctx}`, a third driver reply shape the
+  session records without executing (`origin: :replay` on the event).
+  Codex's catch holds: replaying actions would re-run tools, so the
+  recorded *result* is injected. The test proves it with
+  `spawn_subagent`: the branch's replayed spawn carries the parent's
+  child pid and no second child appears under the supervisor. The
+  `overrides` map substitutes a result at a replayed turn, which made
+  the `result_override` axis (Stretch) fall out of step 7 for free.
+- **Step 8, `Tiller.Session.fork/4`** applies one mutation at one turn:
+  `whitelist`, `driver`, `result_override`, and `latency` (a delay before
+  each live turn; also free). `kill_at` is refused with
+  `{:unsupported, :kill_at}` until open question 5 is answered. An
+  override outside the prefix and a turn beyond the log are refused too.
+  Branches run under `Tiller.Supervisor` with `parent_id` set to the
+  forked session, `fork_turn` and `mutation` in `info/1`.
+- **`Tiller.Lab.race/4`** is the MVP without the screen: fork N, run all
+  before awaiting any, await all, and report `Divergence.first_diff/3`
+  per branch. `Tiller.Demo.butterfly/0` prints it. Step 9's LiveView
+  calls this and paints `State.subscribe(:all)`.
+
+Success criteria check: the MVP asked for at least 4 branches across
+the two plumbed axes, watched finishing at different times, with the
+first divergence reported. Everything but "watched" (the LiveView) is
+met, and four axes are live rather than two.
+
+Next: step 9, the LiveView (adds Phoenix; swap `State.subscribe/1` to
+`Phoenix.PubSub`). Then open question 5 for `kill_at`.
 
 ## What I noticed about how you think
 

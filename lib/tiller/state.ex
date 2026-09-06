@@ -31,10 +31,10 @@ defmodule Tiller.State do
   @doc "The registry `subscribe/1` uses; started by the application."
   def registry_spec, do: {Registry, keys: :duplicate, name: @registry}
 
-  @doc "Append one event. Returns the stored event, `seq` assigned."
-  @spec append(term, term, non_neg_integer, Event.action(), Event.result()) :: {:ok, Event.t()}
-  def append(session_id, parent_id, turn, action, result) do
-    GenServer.call(__MODULE__, {:append, session_id, parent_id, turn, action, result})
+  @doc "Append one event. Returns the stored event, `seq` assigned. `origin` is `:live` or `:replay`."
+  @spec append(term, term, non_neg_integer, Event.action(), Event.result(), :live | :replay) :: {:ok, Event.t()}
+  def append(session_id, parent_id, turn, action, result, origin \\ :live) do
+    GenServer.call(__MODULE__, {:append, session_id, parent_id, turn, action, result, origin})
   end
 
   @doc "All events for one session, oldest first."
@@ -80,9 +80,9 @@ defmodule Tiller.State do
   def init(_), do: {:ok, %{seq: 0, events: []}}
 
   @impl true
-  def handle_call({:append, sid, pid, turn, action, result}, _from, s) do
+  def handle_call({:append, sid, pid, turn, action, result, origin}, _from, s) do
     seq = s.seq + 1
-    ev = %Event{seq: seq, session_id: sid, parent_id: pid, turn: turn, action: action, result: result}
+    ev = %Event{seq: seq, session_id: sid, parent_id: pid, turn: turn, action: action, result: result, origin: origin}
     publish(ev)
     {:reply, {:ok, ev}, %{s | seq: seq, events: [ev | s.events]}}
   end

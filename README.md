@@ -48,6 +48,12 @@ Tiller (DynamicSupervisor)
   ways. A prefix walk with a normalizing equality (pids, refs, and stack
   traces are not divergence). The go/no-go spike for
   [the butterfly lab](docs/designs/agent-butterfly-lab.md); it passed.
+- **Fork and race** (`Tiller.Session.fork/4`, `Tiller.Lab.race/4`): fork a
+  session at any turn under one mutation (`whitelist`, `driver`,
+  `result_override`, `latency`), re-live the prefix through
+  `Tiller.Driver.Replay` with recorded results injected and nothing
+  re-executed, then run live. `race/4` forks N branches, runs them
+  concurrently, and reports each one's first divergence from the parent.
 - **Driver** (`Tiller.Driver` behaviour): the only seam for "where the next
   action comes from". `Tiller.FakeDriver` scripts a list of actions for
   tests/demos. A real LLM driver (grammar-constrained decode → quoted term)
@@ -74,7 +80,11 @@ Tiller (DynamicSupervisor)
 - One turn per message; no concurrent tool calls within a turn. Add
   `Task.async_stream` when a single turn needs fan-out. Sessions themselves
   run concurrently.
-- No real LLM driver yet. The FakeDriver is the contract.
+- No real LLM driver yet. The FakeDriver is the contract. A real one
+  implements `next_action/1` and, to be forkable, `resume_ctx/2`.
+- The `kill_at` mutation is refused: a supervisor restart replays the
+  child's initial arguments, which is a duplicate branch, not a resume
+  (design open question 5).
 
 ## Research
 
@@ -124,7 +134,8 @@ Foundation for the butterfly lab: attributed event store, async sessions,
 
 ```sh
 mix test
-mix run -e 'Tiller.Demo.run()'
+mix run -e 'Tiller.Demo.run()'          # root + subagent, a contained crash
+mix run -e 'Tiller.Demo.butterfly()'    # one run forked five ways at turn 1, raced, compared
 ```
 
 Against a real open-seed repo (one you instantiated from the template, with

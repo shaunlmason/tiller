@@ -11,6 +11,7 @@ defmodule Tiller.Session do
     parent_id: the spawning session's id, nil for a root
     state:     the Tiller.State module (or any {append/5} impl)
     parent:    optional pid; gets {:subagent_halted, self, n} on halt
+    latency:   ms to wait before each turn (default 0): the latency axis
 
   `run/1` is a cast: each turn is its own message (ask the driver ->
   evaluate against the whitelist -> append the event -> schedule the next
@@ -84,6 +85,65 @@ defmodule Tiller.Session do
     await(pid, timeout)
   end
 
+  @doc """
+  Fork a session at `turn` under one mutation (butterfly lab, step 8).
+
+  The branch is a new session under `Tiller.Supervisor` whose `parent_id`
+  is this session's id. It re-lives this session's first `turn` events
+  through `Tiller.Driver.Replay` (recorded results injected, nothing
+  re-executed) and then continues live under the mutation:
+
+    * `{:whitelist, wl}`: the parent's driver, resumed at `turn`, under `wl`
+    * `{:driver, mod, ctx}`: `mod` takes over at `turn` (its `resume_ctx/2`
+      positions `ctx`, or `ctx` is used as supplied)
+    * `{:result_override, t, result}`: the parent's driver, with the
+      recorded result at replayed turn `t` (< `turn`) replaced
+    * `{:latency, ms}`: the parent's driver with `ms` before every live turn
+    * `{:kill_at, _}`: not yet (open question 5)
+
+  Options: `id:` (default `"<parent>/f<turn>-<n>"`), `state:`. Returns
+  `{:ok, pid}`; call `run/1` (or `Tiller.Lab.race/4`) to start it.
+  """
+  @spec fork(pid, non_neg_integer, Tiller.Mutation.t(), keyword) :: {:ok, pid} | {:error, term}
+  def fork(pid, turn, mutation, opts \\ []) do
+    %{id: parent_id, driver: driver, initial_ctx: initial, whitelist: wl, state: state, turns: turns} = info(pid)
+
+    with :ok <- check_fork(turn, turns, mutation) do
+      prefix = state.events(parent_id) |> Enum.reject(&match?(%Event{action: :halt}, &1)) |> Enum.take(turn)
+
+      {delegate, dctx, whitelist, overrides, latency} =
+        case mutation do
+          {:whitelist, new_wl} -> {driver, initial, new_wl, [], 0}
+          {:driver, mod, ctx} -> {mod, ctx, wl, [], 0}
+          {:result_override, t, r} -> {driver, initial, wl, [{t, r}], 0}
+          {:latency, ms} -> {driver, initial, wl, [], ms}
+        end
+
+      spec =
+        child_spec(
+          id: Keyword.get_lazy(opts, :id, fn -> "#{parent_id}/f#{turn}-#{System.unique_integer([:positive, :monotonic])}" end),
+          parent_id: parent_id,
+          driver: Tiller.Driver.Replay,
+          ctx: Tiller.Driver.Replay.context(prefix, delegate, dctx, overrides: overrides),
+          whitelist: whitelist,
+          latency: latency,
+          state: Keyword.get(opts, :state, state),
+          fork_turn: turn,
+          mutation: mutation
+        )
+
+      DynamicSupervisor.start_child(Application.fetch_env!(:tiller, :supervisor), spec)
+    end
+  end
+
+  defp check_fork(_turn, _turns, {:kill_at, _}), do: {:error, {:unsupported, :kill_at}}
+
+  defp check_fork(turn, _turns, {:result_override, t, _}) when t >= turn,
+    do: {:error, {:override_outside_prefix, t, turn}}
+
+  defp check_fork(turn, turns, _mutation) when turn > turns, do: {:error, {:turn_beyond_log, turn, turns}}
+  defp check_fork(_turn, _turns, _mutation), do: :ok
+
   defp wait_for_halt(id, timeout) do
     receive do
       {:tiller_event, %Event{session_id: ^id, action: :halt, result: {:halted, n}}} -> {:halted, n}
@@ -117,9 +177,13 @@ defmodule Tiller.Session do
        parent_id: Keyword.get(opts, :parent_id),
        driver: driver,
        ctx: ctx,
+       initial_ctx: ctx,
        whitelist: Keyword.get(opts, :whitelist, Tiller.Actions.root_whitelist()),
        state: Keyword.get(opts, :state, Tiller.State),
        parent: Keyword.get(opts, :parent),
+       latency: Keyword.get(opts, :latency, 0),
+       fork_turn: Keyword.get(opts, :fork_turn),
+       mutation: Keyword.get(opts, :mutation),
        turns: 0,
        status: :idle
      }}
@@ -129,12 +193,12 @@ defmodule Tiller.Session do
   def handle_call(:id, _from, s), do: {:reply, s.id, s}
 
   def handle_call(:info, _from, s) do
-    {:reply, Map.take(s, [:id, :parent_id, :turns, :status, :state]), s}
+    {:reply, Map.take(s, [:id, :parent_id, :turns, :status, :state, :driver, :initial_ctx, :whitelist, :fork_turn, :mutation, :latency]), s}
   end
 
   @impl true
   def handle_cast(:run, %{status: :idle} = s) do
-    send(self(), :turn)
+    schedule_turn(s)
     {:noreply, %{s | status: :running}}
   end
 
@@ -151,6 +215,12 @@ defmodule Tiller.Session do
       {:action, a, ctx} ->
         result = Tiller.Actions.eval(a, s.whitelist)
         s.state.append(s.id, s.parent_id, s.turns, a, result)
+        schedule_turn(s)
+        {:noreply, %{s | ctx: ctx, turns: s.turns + 1}}
+
+      {:replay, a, result, ctx} ->
+        # the driver already knows the answer: record it, run nothing
+        s.state.append(s.id, s.parent_id, s.turns, a, result, :replay)
         send(self(), :turn)
         {:noreply, %{s | ctx: ctx, turns: s.turns + 1}}
     end
@@ -159,4 +229,7 @@ defmodule Tiller.Session do
   def handle_info(:turn, s), do: {:noreply, s}
 
   def handle_info({:subagent_halted, _pid, _n}, s), do: {:noreply, s}
+
+  defp schedule_turn(%{latency: 0}), do: send(self(), :turn)
+  defp schedule_turn(%{latency: ms}), do: Process.send_after(self(), :turn, ms)
 end

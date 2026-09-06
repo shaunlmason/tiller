@@ -59,11 +59,38 @@ defmodule Tiller.Demo do
     print_log("tiller seed demo")
   end
 
+  @doc """
+  The butterfly lab in a terminal: one run, forked at turn 1 under five
+  mutations, raced, and compared. No engine, no Phoenix.
+  """
+  def butterfly do
+    Tiller.State.clear()
+    a = &Tiller.Driver.action/2
+
+    script = [a.(:echo, ["plan"]), a.(:fail, []), a.(:echo, ["recover"]), a.(:echo, ["done"])]
+    {:ok, root} = Tiller.Session.start_link(driver: Tiller.FakeDriver, ctx: Tiller.FakeDriver.context(script), id: "root")
+    {:halted, n} = Tiller.Session.run_to_halt(root)
+    IO.puts("root halted after #{n} turns; forking at turn 1")
+
+    results =
+      Tiller.Lab.race(root, 1, [
+        {:whitelist, Tiller.Actions.root_whitelist()},
+        {:whitelist, List.delete(Tiller.Actions.root_whitelist(), {:fail, 0})},
+        {:result_override, 0, {:ok, "a different plan"}},
+        {:driver, Tiller.FakeDriver, Tiller.FakeDriver.context([a.(:echo, ["plan"]), a.(:echo, ["skip the crash"])])},
+        {:latency, 20},
+        {:kill_at, 2}
+      ])
+
+    IO.puts(Tiller.Lab.format(results))
+    print_log("butterfly")
+  end
+
   defp print_log(title) do
     IO.puts("=== #{title}: event log (seq session/turn) ===")
 
-    for %Tiller.Event{seq: seq, session_id: sid, turn: t, action: a, result: r} <- Tiller.State.events() do
-      IO.puts("#{seq} #{sid}/#{t} " <> inspect(a))
+    for %Tiller.Event{seq: seq, session_id: sid, turn: t, action: a, result: r, origin: o} <- Tiller.State.events() do
+      IO.puts("#{seq} #{sid}/#{t}#{if o == :replay, do: " (replay)", else: ""} " <> inspect(a, limit: 6))
       IO.puts("  -> " <> inspect(r, limit: 12))
     end
 
