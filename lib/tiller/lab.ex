@@ -17,7 +17,8 @@ defmodule Tiller.Lab do
           id: term,
           lineage: [term],
           outcome: {:halted, non_neg_integer} | {:error, :timeout | :dead},
-          verdict: Divergence.verdict()
+          verdict: Divergence.verdict(),
+          rank: pos_integer | nil
         }
 
   @doc """
@@ -25,7 +26,9 @@ defmodule Tiller.Lab do
   all, and compare each to the parent. Options: `timeout:` per branch
   (default 5_000), `key:` for `Tiller.Divergence.first_diff/3`.
   Unsupported or invalid mutations come back as
-  `%{mutation: m, error: reason}` entries instead of branches.
+  `%{mutation: m, error: reason}` entries instead of branches. Every
+  branch carries its `rank` (see `rank/1`); the list itself stays in
+  mutation order.
   """
   @spec race(pid, non_neg_integer, [Mutation.t()], keyword) :: [branch | %{mutation: Mutation.t(), error: term}]
   def race(pid, turn, mutations, opts \\ []) do
@@ -45,7 +48,8 @@ defmodule Tiller.Lab do
 
     parent_events = Tiller.State.events(parent_id)
 
-    Enum.map(started, fn
+    started
+    |> Enum.map(fn
       {m, {:error, reason}, _} ->
         %{mutation: m, error: reason}
 
@@ -63,6 +67,78 @@ defmodule Tiller.Lab do
           verdict: Divergence.first_diff(parent_events, Tiller.State.events(final), Keyword.take(opts, [:key]))
         }
     end)
+    |> rank()
+  end
+
+  @doc """
+  The smallest decisive mutation (open question 3).
+
+  Axes are incommensurable, so no size is ever compared across axes.
+  What every branch shares is the trajectory it perturbed, and the
+  divergence turn measures how much of it survived: a branch that stays
+  identical to its parent for longer before diverging is the smaller
+  change to the run. So, among branches that diverged:
+
+    1. later divergence turn ranks first (the more surgical change);
+    2. on the same turn *and the same axis*, smaller `Mutation.size/1`
+       ranks first;
+    3. on the same turn and different axes, the branches tie: same rank.
+
+  Branches that never diverged had no effect and get `rank: nil`; error
+  entries are untouched. Returns the results in their original order
+  with `:rank` set; `ranked/1` sorts them.
+  """
+  @spec rank([map]) :: [map]
+  def rank(results) do
+    ranked =
+      results
+      |> Enum.reject(&(Map.has_key?(&1, :error) or not diverged?(&1)))
+      |> Enum.sort_by(&{-diverged_at(&1), Mutation.axis(&1.mutation), Mutation.size(&1.mutation)})
+      |> dense_ranks()
+
+    Enum.map(results, fn r ->
+      if Map.has_key?(r, :error), do: r, else: Map.put(r, :rank, Map.get(ranked, r.id))
+    end)
+  end
+
+  @doc "Results sorted by rank, no-effect branches last, errors after those."
+  def ranked(results) do
+    Enum.sort_by(results, fn
+      %{error: _} -> {2, 0}
+      %{rank: nil} -> {1, 0}
+      %{rank: n} -> {0, n}
+    end)
+  end
+
+  @doc "The top-ranked branches (several when they tie), or [] if nothing diverged."
+  def smallest(results), do: for(%{rank: 1} = r <- results, do: r)
+
+  defp diverged?(%{verdict: {:diverged, _, _, _}}), do: true
+  defp diverged?(_), do: false
+  defp diverged_at(%{verdict: {:diverged, t, _, _}}), do: t
+
+  # dense ranking: same turn + different axis tie; same turn + same axis
+  # + same size tie too; anything else advances
+  defp dense_ranks(sorted) do
+    sorted
+    |> Enum.reduce({%{}, 0, nil}, fn r, {acc, n, prev} ->
+      key = tie_key(r, prev)
+      n = if key == prev, do: n, else: n + 1
+      {Map.put(acc, r.id, n), n, key}
+    end)
+    |> elem(0)
+  end
+
+  defp tie_key(r, prev) do
+    t = diverged_at(r)
+    axis = Mutation.axis(r.mutation)
+    size = Mutation.size(r.mutation)
+
+    case prev do
+      {^t, ^axis, ^size} -> prev
+      {^t, other_axis, _} when other_axis != axis -> prev
+      _ -> {t, axis, size}
+    end
   end
 
   @doc "Stop every session under the supervisor and clear the store: a fresh lab."
@@ -75,16 +151,21 @@ defmodule Tiller.Lab do
     Tiller.State.clear()
   end
 
-  @doc "One line per branch, for a terminal."
+  @doc "One line per branch in rank order, for a terminal."
   def format(results) do
-    Enum.map_join(results, "\n", fn
+    results
+    |> ranked()
+    |> Enum.map_join("\n", fn
       %{mutation: m, error: reason} ->
-        "  #{Mutation.label(m)}: not run (#{inspect(reason)})"
+        "  --  #{Mutation.label(m)}: not run (#{inspect(reason)})"
 
-      %{mutation: m, lineage: lineage, outcome: outcome, verdict: verdict} ->
-        "  #{Mutation.label(m)} [#{Enum.join(lineage, " -> ")}] #{inspect(outcome)}: #{describe(verdict)}"
+      %{mutation: m, lineage: lineage, outcome: outcome, verdict: verdict} = r ->
+        "  #{rank_text(r)}  #{Mutation.label(m)} [#{Enum.join(lineage, " -> ")}] #{inspect(outcome)}: #{describe(verdict)}"
     end)
   end
+
+  defp rank_text(%{rank: nil}), do: "--"
+  defp rank_text(%{rank: n}), do: "##{n}"
 
   defp describe(:identical), do: "identical"
 

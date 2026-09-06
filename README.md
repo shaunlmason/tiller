@@ -57,7 +57,9 @@ Tiller (DynamicSupervisor)
   `result_override`, `latency`, `kill_at`), re-live the prefix through
   `Tiller.Driver.Replay` with recorded results injected and nothing
   re-executed, then run live. `race/4` forks N branches, runs them
-  concurrently, and reports each one's first divergence from the parent.
+  concurrently, reports each one's first divergence from the parent, and
+  ranks them: later divergence is the smaller change, same turn on the
+  same axis ranks by size, same turn on different axes ties.
 - **Restart is resume**: a session's packet (driver, initial context,
   whitelist, lineage) lives in `Tiller.State` beside its events. When the
   supervisor restarts a killed session, `init/1` finds the packet and comes

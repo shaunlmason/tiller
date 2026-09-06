@@ -330,10 +330,15 @@ defmodule TillerWeb.LabLive do
 
         <%= if @race do %>
           <p class="kv">forked <b>{@race.parent}</b> at turn <b>{@race.turn}</b>: {if @race.done, do: "done", else: "racing"}</p>
+          <p :if={@race.results && Lab.smallest(@race.results) != []} class="kv">
+            smallest decisive mutation: <b>{@race.results |> Lab.smallest() |> Enum.map_join(", ", &Mutation.label(&1.mutation))}</b>
+            (latest divergence, turn {@race.results |> Lab.smallest() |> hd() |> then(fn %{verdict: {:diverged, t, _, _}} -> t end)})
+          </p>
           <table>
-            <tr><th>mutation</th><th>branch</th><th>state</th><th>verdict</th></tr>
+            <tr><th>#</th><th>mutation</th><th>branch</th><th>state</th><th>verdict</th></tr>
             <%= if @race.results do %>
-              <tr :for={r <- @race.results}>
+              <tr :for={r <- Lab.ranked(@race.results)}>
+                <td>{case r do %{rank: n} when is_integer(n) -> "##{n}"; _ -> "--" end}</td>
                 <td>{Mutation.label(r.mutation)}</td>
                 <%= if Map.has_key?(r, :error) do %>
                   <td></td><td class="verdict error">not run</td><td class="verdict error">{inspect(r.error)}</td>
@@ -345,6 +350,7 @@ defmodule TillerWeb.LabLive do
               </tr>
             <% else %>
               <tr :for={{id, final, evs} <- @race_branches}>
+                <td></td>
                 <td>{case meta(id) do %{mutation: m} when not is_nil(m) -> Mutation.label(m); _ -> "" end}</td>
                 <td>{Enum.join(Session.lineage(id), " -> ")}</td>
                 <td class={status(final, evs)}>{case status(final, evs) do

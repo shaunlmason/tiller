@@ -22,6 +22,28 @@ defmodule Tiller.Mutation do
   @spec supported?(t) :: boolean
   def supported?(m) when is_tuple(m), do: elem(m, 0) in [:whitelist, :driver, :result_override, :latency, :kill_at]
 
+  @doc "The axis a mutation lies on."
+  @spec axis(t | {:resumed, non_neg_integer}) :: atom
+  def axis(m) when is_tuple(m), do: elem(m, 0)
+
+  @doc """
+  A mutation's size *within its axis* (open question 3): tools removed or
+  added for a whitelist, milliseconds for latency, and one for a single
+  override, a driver swap, or a kill. Sizes on different axes are not
+  comparable; `Tiller.Lab.rank/1` never compares them.
+  """
+  @spec size(t) :: non_neg_integer
+  def size({:whitelist, wl}) do
+    root = Tiller.Actions.root_whitelist()
+    length(root -- wl) + length(wl -- root)
+  end
+
+  def size({:latency, ms}), do: ms
+  def size({:result_override, _, _}), do: 1
+  def size({:driver, _, _}), do: 1
+  def size({:kill_at, _}), do: 1
+  def size({:resumed, _}), do: 0
+
   @doc "A short label for reports."
   def label({:whitelist, wl}) do
     root = Tiller.Actions.root_whitelist()

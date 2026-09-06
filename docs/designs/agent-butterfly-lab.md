@@ -475,9 +475,32 @@ before turn N", and its resume as "resumed from <id>".
 The `kill_at` turn must be at or after the fork turn
 (`{:kill_before_fork, t, turn}` otherwise).
 
-**All five mutation axes are live.** Remaining open questions: 3
-(ranking incommensurable mutations) and 4 (32 branches on one screen),
-both stretch and both untouched.
+**All five mutation axes are live.**
+
+## Open question 3 (2026-09-06): the smallest decisive mutation
+
+**Decided: rank within an axis by size, across axes by divergence
+turn, and never compare sizes across axes.** A whitelist removal and
+200ms of latency have no common scale, but every branch in a race
+perturbed the same trajectory, and the divergence turn measures how
+much of it survived. A branch that stays identical to its parent for
+longer before diverging is the smaller change to the run. So among
+branches that diverged, a later divergence turn ranks first; on the
+same turn and the same axis, the smaller `Tiller.Mutation.size/1`
+(tools removed or added, milliseconds, else one) ranks first; on the
+same turn and different axes the branches tie and share a rank.
+Branches that never diverged had no effect and are unranked. Errors
+are untouched. Dense ranks, so `#1` can be two branches.
+
+`Tiller.Lab.race/4` sets `rank` on every branch; `ranked/1` sorts,
+`smallest/1` returns the top tie, `format/1` prints in rank order with
+`#n` or `--`. The race table shows the rank column and names the
+smallest decisive mutation above it. This is a partial order with no
+invented weights; the hand-assigned-weights alternative stays
+available as a `key:`-style option if someone needs a total order.
+
+Remaining: open question 4 (32 branches on one screen), stretch,
+untouched.
 
 ## What I noticed about how you think
 

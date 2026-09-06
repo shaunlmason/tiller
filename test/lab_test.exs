@@ -201,4 +201,46 @@ defmodule Tiller.LabTest do
     assert Lab.format(results) =~ "diverged at turn 1: fail/0"
     assert Lab.format(results) =~ "kill@2 [#{killed} -> #{resumed}] {:halted, 4}: identical"
   end
+
+  test "rank: later divergence is the smaller change; same turn across axes ties; no effect is unranked" do
+    pid = root([act(:echo, ["plan"]), act(:fail), act(:echo, ["recover"]), act(:echo, ["done"])])
+
+    results =
+      Lab.race(pid, 1, [
+        {:whitelist, Tiller.Actions.root_whitelist()},
+        {:whitelist, List.delete(Tiller.Actions.root_whitelist(), {:fail, 0})},
+        {:result_override, 0, {:ok, "a different plan"}},
+        {:driver, FakeDriver, FakeDriver.context([act(:echo, ["plan"]), act(:echo, ["skip the crash"])])},
+        {:kill_at, 2}
+      ])
+
+    assert [nil, 1, 2, 1, nil] = Enum.map(results, & &1.rank)
+
+    # ranked/1 sorts by rank, no-effect last, in stable mutation order within a tie
+    assert [{:whitelist, _}, {:driver, _, _}, {:result_override, 0, _}, {:whitelist, _}, {:kill_at, 2}] =
+             results |> Lab.ranked() |> Enum.map(& &1.mutation)
+
+    assert [%{mutation: {:whitelist, _}}, %{mutation: {:driver, _, _}}] = Lab.smallest(results)
+    assert Lab.format(results) =~ ~r/^  #1  whitelist=root-fail\/0/m
+    assert Lab.format(results) =~ ~r/^  --  kill@2/m
+  end
+
+  test "rank: on one axis and one turn, the smaller mutation ranks first" do
+    pid = root([act(:echo, ["a"]), act(:fail), act(:echo, ["b"])])
+    wl = Tiller.Actions.root_whitelist()
+
+    results =
+      Lab.race(pid, 1, [
+        {:whitelist, wl -- [{:fail, 0}, {:echo, 1}]},
+        {:whitelist, wl -- [{:fail, 0}]},
+        {:latency, 1}
+      ])
+
+    # both whitelist branches diverge at turn 1 (fail refused); the one that removed less ranks first
+    assert [2, 1, nil] = Enum.map(results, & &1.rank)
+    assert [2, 1] = Enum.map(Enum.take(results, 2), &Mutation.size(&1.mutation))
+    assert Mutation.size({:latency, 250}) == 250
+    assert Mutation.axis({:result_override, 0, :x}) == :result_override
+    assert Lab.rank([]) == []
+  end
 end

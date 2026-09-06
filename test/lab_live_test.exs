@@ -65,6 +65,10 @@ defmodule TillerWeb.LabLiveTest do
     assert html =~ "override@0"
     assert html =~ "diverged at turn 0"
     assert html =~ "kill@2"
+    assert html =~ "smallest decisive mutation: <b>whitelist=root-fail/0</b>"
+    assert html =~ "<td>#1</td><td>whitelist=root-fail/0</td>"
+    assert html =~ "<td>#2</td><td>override@0"
+    assert html =~ "<td>--</td><td>whitelist=root</td>"
     assert html =~ ~r/root-\d+\/f1-\d+ -&gt; root-\d+\/f1-\d+\/r\d+/
     assert html =~ "resumed from"
     assert html =~ ">dead<"
