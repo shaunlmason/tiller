@@ -32,7 +32,8 @@ Tiller (DynamicSupervisor)
 ├─ Tiller.Registry         ← sessions addressable by id
 ├─ Session "root"          ← you drive; base tools + spawn_subagent
 │   └─ Session "root.0"    ← LLM/fake-driven; base tools only, no spawn
-└─ Session (other tasks)
+├─ Session "root@2.1"      ← a fork of root at turn 2, one thing different
+└─ TillerWeb.Endpoint      ← the lab screen (Phoenix LiveView, loopback only)
 ```
 
 - **Session** (`Tiller.Session`): one GenServer per run. `run/1` casts; each
@@ -51,6 +52,12 @@ Tiller (DynamicSupervisor)
   from the tool-state snapshot taken at that turn, then continues with the
   source's driver and context as they were, or with what the mutation says.
   Branches run under the supervisor and race; `Tiller.Demo.run/0` shows four.
+- **Lab** (`TillerWeb.LabLive`): three panes. Timeline of the recorded run
+  on the left (click a turn to pick the fork point), that turn across every
+  branch in the middle, the live race on the right with each branch's first
+  divergence. Fed entirely by `Tiller.State.subscribe/1`; nothing polls.
+  Phoenix is the only reason the project is no longer dependency-free, and
+  it stays out of `lib/tiller`.
 - **Driver** (`Tiller.Driver` behaviour): the only seam for "where the next
   action comes from". `Tiller.FakeDriver` scripts a list of actions for
   tests/demos. A real LLM driver (grammar-constrained decode → quoted term)
@@ -98,12 +105,14 @@ Projects looked at while shaping tiller, with the verdict on each.
 
 ## Status
 
-Butterfly lab core from `docs/design.md`, minus the screen: attributed event
-store, async sessions, six tools, replay, fork with four of five mutation
-axes (`kill_at` is refused, see Open Question 5), concurrent branch race,
-first-divergence report. Next: LiveView. Run:
+The MVP from `docs/design.md`: attributed event store, async sessions, six
+tools, replay, fork with four of five mutation axes (`kill_at` is refused,
+see Open Question 5), concurrent branch race, first-divergence report, and
+the LiveView lab. Run:
 
 ```sh
+mix deps.get
 mix test
-mix run -e 'Tiller.Demo.run()'
+mix run -e 'Tiller.Demo.run()'   # the race in the terminal
+mix phx.server                   # the lab at http://localhost:4000
 ```

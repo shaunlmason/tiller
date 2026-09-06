@@ -7,9 +7,11 @@ defmodule Tiller.Demo do
 
   alias Tiller.{Actions, Divergence, Driver, Event, FakeDriver, Session, State}
 
-  def run do
-    Tiller.reset()
-
+  @doc """
+  Start the demo run as session "root" under Tiller's supervisor and run
+  it. Returns the pid; the run proceeds asynchronously.
+  """
+  def record do
     sub_ctx = FakeDriver.context([Driver.action(:echo, ["from subagent"])])
 
     root_ctx =
@@ -22,9 +24,17 @@ defmodule Tiller.Demo do
         Driver.action(:get, [:greeting])
       ])
 
-    {:ok, pid} = Session.start_link(driver: FakeDriver, ctx: root_ctx, id: "root")
-    State.subscribe("root.0")
+    sup = Application.fetch_env!(:tiller, :supervisor)
+    spec = Session.child_spec(driver: FakeDriver, ctx: root_ctx, id: "root")
+    {:ok, pid} = DynamicSupervisor.start_child(sup, spec)
     Session.run(pid)
+    pid
+  end
+
+  def run do
+    Tiller.reset()
+    State.subscribe("root.0")
+    pid = record()
     {:halted, _} = Session.await(pid)
 
     receive do

@@ -28,6 +28,8 @@ defmodule Tiller do
       Tiller.State,
       Tiller.ToolState,
       {Registry, keys: :unique, name: Tiller.Registry},
+      {Phoenix.PubSub, name: Tiller.PubSub},
+      TillerWeb.Endpoint,
       %{
         id: Tiller.Supervisor,
         start:
