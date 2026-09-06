@@ -122,6 +122,25 @@ defmodule Tiller.Session do
     await(pid, timeout)
   end
 
+  @doc """
+  Bring back a session that has a packet and events but no process: one
+  that died with the VM, or a `:temporary` one that crashed. Starts a
+  supervised child with just the id, which `init/1` turns into a resume
+  (see "Restart is resume"). Refused when the session is alive, unknown,
+  or already halted.
+  """
+  @spec resume(term) :: {:ok, pid} | {:error, :alive | :unknown | :halted}
+  def resume(id) do
+    last = final(id)
+
+    cond do
+      is_nil(State.get_session(last)) -> {:error, :unknown}
+      Enum.any?(State.events(last), &match?(%Event{action: :halt}, &1)) -> {:error, :halted}
+      whereis(last) -> {:error, :alive}
+      true -> DynamicSupervisor.start_child(Application.fetch_env!(:tiller, :supervisor), child_spec(id: last, restart: :transient))
+    end
+  end
+
   @doc "The last session in `id`'s resume chain (itself when never resumed)."
   def final(id) do
     case State.get_session(id) do

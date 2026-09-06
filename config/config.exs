@@ -21,5 +21,13 @@ if System.get_env("PHX_SERVER") in ["1", "true"] do
   config :tiller, TillerWeb.Endpoint, server: true
 end
 
+# Durable store: every event and packet is appended here and read back at
+# start (Tiller.State.Log). Dev keeps a file so `mix phx.server` survives a
+# restart with its trajectories; tests stay in memory; TILLER_STATE_LOG
+# overrides either.
+if config_env() == :dev do
+  config :tiller, state_log: "tmp/tiller-state.log"
+end
+
 config :phoenix, :json_library, Jason
 config :logger, level: :info

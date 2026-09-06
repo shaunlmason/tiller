@@ -502,6 +502,20 @@ available as a `key:`-style option if someone needs a total order.
 Remaining: open question 4 (32 branches on one screen), stretch,
 untouched.
 
+## Beyond the design (2026-09-06): persistence
+
+`Tiller.State` now appends every event and packet to a log file
+(`Tiller.State.Log`: length-prefixed `term_to_binary` frames, read whole
+at start, a torn tail dropped) when `state_log` is configured; dev uses
+`tmp/tiller-state.log`, tests stay in memory. With the store durable,
+"restart is resume" extends to the VM: `Tiller.Session.resume/1` starts
+a supervised child with only an id, which `init/1` turns into a resume
+from the log, and `Tiller.Lab.resume_dead/0` does it for every session
+the restart interrupted. The page shows those as `dead` with a resume
+button. The test kills a running root, re-reads the log as a restart
+would, resumes it, and asserts the final trajectory is identical to an
+uninterrupted run.
+
 ## Beyond the design (2026-09-06): a real driver
 
 The constraint "no real LLM driver; FakeDriver stays the contract" held

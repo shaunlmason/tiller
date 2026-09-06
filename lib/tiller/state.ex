@@ -11,8 +11,12 @@ defmodule Tiller.State do
   every append for that session, or for every session with `:all`, over
   `Phoenix.PubSub` (`Tiller.PubSub`; the LiveView subscribes to `:all`).
 
-  In-memory, newest first internally, oldest first on every read. Move to
-  ETS or a table when replay across restarts is needed.
+  In memory, newest first internally, oldest first on every read. With
+  `config :tiller, state_log: path` (or `TILLER_STATE_LOG`) every write is
+  also appended to that file (`Tiller.State.Log`) and the store is rebuilt
+  from it at start, so trajectories and packets survive a VM restart and
+  a session that died with the VM can be brought back with
+  `Tiller.Session.resume/1`.
   """
   use GenServer
 
@@ -83,36 +87,90 @@ defmodule Tiller.State do
   @doc "A session's packet, or nil."
   def get_session(id), do: GenServer.call(__MODULE__, {:get_session, id})
 
-  @doc "Reset (tests)."
+  @doc "Reset (tests). Truncates the log file too."
   def clear, do: GenServer.call(__MODULE__, :clear)
+
+  @doc """
+  Switch to (or re-read) the log at `path`, replacing the in-memory store
+  with the file's contents; `nil` goes back to memory only. What a VM
+  restart does, callable for tests.
+  """
+  def reopen(path), do: GenServer.call(__MODULE__, {:reopen, path})
+
+  @doc "The log path in use, or nil."
+  def log_path, do: GenServer.call(__MODULE__, :log_path)
 
   ## Server
 
   @impl true
-  def init(_), do: {:ok, %{seq: 0, events: [], sessions: %{}}}
+  def init(_) do
+    path = Application.get_env(:tiller, :state_log) || blank_to_nil(System.get_env("TILLER_STATE_LOG"))
+    {:ok, load(path)}
+  end
+
+  defp blank_to_nil(""), do: nil
+  defp blank_to_nil(v), do: v
+
+  # the store from a log file (or an empty one from nothing)
+  defp load(nil), do: %{seq: 0, events: [], sessions: %{}, log: nil, path: nil}
+
+  defp load(path) do
+    empty = %{seq: 0, events: [], sessions: %{}, log: nil, path: path}
+
+    s =
+      Enum.reduce(Tiller.State.Log.read(path), empty, fn
+        {:event, %Event{} = ev}, s -> %{s | seq: max(s.seq, ev.seq), events: [ev | s.events]}
+        {:session, id, packet}, s -> %{s | sessions: Map.put(s.sessions, id, packet)}
+        _, s -> s
+      end)
+
+    %{s | log: Tiller.State.Log.open(path)}
+  end
+
+  defp record(%{log: nil}, _frame), do: :ok
+  defp record(%{log: io}, frame), do: Tiller.State.Log.append(io, frame)
 
   @impl true
   def handle_call({:append, sid, pid, turn, action, result, origin}, _from, s) do
     seq = s.seq + 1
     ev = %Event{seq: seq, session_id: sid, parent_id: pid, turn: turn, action: action, result: result, origin: origin}
+    record(s, {:event, ev})
     publish(ev)
     {:reply, {:ok, ev}, %{s | seq: seq, events: [ev | s.events]}}
   end
+
+  def handle_call({:reopen, path}, _from, s) do
+    if s.log, do: File.close(s.log)
+    {:reply, :ok, load(path)}
+  end
+
+  def handle_call(:log_path, _from, s), do: {:reply, s.path, s}
 
   def handle_call({:events, sid}, _from, s) do
     {:reply, s.events |> Enum.filter(&(&1.session_id == sid)) |> Enum.reverse(), s}
   end
 
   def handle_call(:all, _from, s), do: {:reply, Enum.reverse(s.events), s}
-  def handle_call(:clear, _from, _s), do: {:reply, :ok, %{seq: 0, events: [], sessions: %{}}}
 
-  def handle_call({:put_session, id, packet}, _from, s),
-    do: {:reply, :ok, %{s | sessions: Map.put(s.sessions, id, packet)}}
+  def handle_call(:clear, _from, s) do
+    log = if s.log, do: Tiller.State.Log.truncate(s.log, s.path), else: nil
+    {:reply, :ok, %{seq: 0, events: [], sessions: %{}, log: log, path: s.path}}
+  end
+
+  def handle_call({:put_session, id, packet}, _from, s) do
+    record(s, {:session, id, packet})
+    {:reply, :ok, %{s | sessions: Map.put(s.sessions, id, packet)}}
+  end
 
   def handle_call({:update_session, id, fun}, _from, s) do
     case Map.fetch(s.sessions, id) do
-      {:ok, packet} -> {:reply, :ok, %{s | sessions: Map.put(s.sessions, id, fun.(packet))}}
-      :error -> {:reply, {:error, :unknown_session}, s}
+      {:ok, packet} ->
+        packet = fun.(packet)
+        record(s, {:session, id, packet})
+        {:reply, :ok, %{s | sessions: Map.put(s.sessions, id, packet)}}
+
+      :error ->
+        {:reply, {:error, :unknown_session}, s}
     end
   end
 

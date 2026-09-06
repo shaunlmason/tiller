@@ -151,6 +151,27 @@ defmodule Tiller.Lab do
     Tiller.State.clear()
   end
 
+  @doc """
+  Every session the store knows that has no process and no halt: the ones
+  a VM restart (or a crash) left unfinished. `resume_dead/0` brings each
+  back through `Tiller.Session.resume/1`.
+  """
+  def dead do
+    for {id, _, _} <- lineage_heads(), Session.whereis(id) == nil, not halted?(id), do: id
+  end
+
+  def resume_dead, do: for(id <- dead(), do: {id, Session.resume(id)})
+
+  defp lineage_heads do
+    Tiller.State.events()
+    |> Enum.map(& &1.session_id)
+    |> Enum.uniq()
+    |> Enum.map(&{Session.final(&1), nil, nil})
+    |> Enum.uniq()
+  end
+
+  defp halted?(id), do: Enum.any?(Tiller.State.events(id), &match?(%Event{action: :halt}, &1))
+
   @doc "One line per branch in rank order, for a terminal."
   def format(results) do
     results

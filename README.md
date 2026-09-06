@@ -44,6 +44,10 @@ Tiller (DynamicSupervisor)
   with a global monotonic `seq`. `events(id)` is one trajectory;
   `Enum.take(events(id), n)` is the state at turn n, which is why forking
   needs no checkpointer. `subscribe(id | :all)` delivers each event live.
+  With `config :tiller, state_log: path` every write is also appended to
+  an on-disk log (`Tiller.State.Log`) and the store is rebuilt from it at
+  start, so a VM restart loses nothing; `Tiller.Session.resume/1` (or
+  `Tiller.Lab.resume_dead/0`) brings back the sessions it interrupted.
 - **Divergence** (`Tiller.Divergence`): where two trajectories first part
   ways. A prefix walk with a normalizing equality (pids, refs, and stack
   traces are not divergence). The go/no-go spike for
@@ -94,8 +98,8 @@ Tiller (DynamicSupervisor)
 
 - Actions are flat MFA terms, no macros/macros-as-prompts. Add when a real
   LLM driver needs composability the whitelist can't express.
-- `Tiller.State` is in-memory, not ETS/Ecto. Add persistence when you need
-  replay across restarts.
+- `Tiller.State` persists through one append-only file, read whole at
+  start. Fine for a lab; move to a table when the log outgrows memory.
 - One turn per message; no concurrent tool calls within a turn. Add
   `Task.async_stream` when a single turn needs fan-out. Sessions themselves
   run concurrently.

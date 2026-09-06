@@ -90,6 +90,13 @@ defmodule TillerWeb.LabLive do
     end
   end
 
+  def handle_event("resume", %{"session" => id}, socket) do
+    case Session.resume(id) do
+      {:ok, _pid} -> {:noreply, socket}
+      {:error, reason} -> {:noreply, put_flash(socket, :error, "cannot resume #{id}: #{reason}")}
+    end
+  end
+
   def handle_event("clear", _params, socket) do
     Lab.reset()
     {:noreply, assign(socket, events: [], selected: nil, root: nil, race: nil)}
@@ -288,7 +295,8 @@ defmodule TillerWeb.LabLive do
         <div :for={{id, parent_id, evs} <- @sessions} class="session" id={"session-#{id}"}>
           <div class="name">
             <span><b>{id}</b> <span :if={parent_id} class="meta">{lineage_text(id)}</span></span>
-            <span class={status(id, evs)}>{status(id, evs)}</span>
+            <span class={status(id, evs)}>{status(id, evs)}
+              <button :if={status(id, evs) == "dead" and Session.final(id) == id} phx-click="resume" phx-value-session={id} style="margin-left:6px;padding:1px 6px">resume</button></span>
           </div>
           <div :if={parent_id} class="meta">
             {case meta(id) do

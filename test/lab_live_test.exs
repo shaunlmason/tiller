@@ -71,7 +71,7 @@ defmodule TillerWeb.LabLiveTest do
     assert html =~ "<td>--</td><td>whitelist=root</td>"
     assert html =~ ~r/root-\d+\/f1-\d+ -&gt; root-\d+\/f1-\d+\/r\d+/
     assert html =~ "resumed from"
-    assert html =~ ">dead<"
+    assert html =~ ~s(class="dead")
     # the resumed session is judged against the root, not the dead branch it resumed
     [resumed_block] = Regex.run(~r/<div class="session" id="session-[^"]+\/r\d+">.*?<\/div><\/div>/s, html)
     assert resumed_block =~ "verdict identical"
