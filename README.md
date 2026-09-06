@@ -78,6 +78,23 @@ Projects looked at while shaping tiller, with the verdict on each.
   real driver exists. A memory-read tool is a genuinely distinct tool, and
   "what if the agent could not consult memory at turn N" is a clean whitelist
   mutation axis for the butterfly lab.
+- **[bb](https://github.com/get-bb/bb)**: looked at, not adopted. A
+  TypeScript "agentic IDE": server, host daemon, web and desktop app, and CLI.
+  It does not run agents itself; it wraps whichever provider CLI you have
+  authenticated (Claude Code, Codex) behind a JSON-RPC bridge over
+  stdin/stdout and shows the resulting threads live so you can steer or hand
+  them off. Wrong layer for tiller, which is the loop rather than an
+  orchestrator of opaque agent processes, and it would bring a Node toolchain
+  with native add-ons to a zero-dependency Elixir project. It also does not
+  solve the butterfly lab problem: threads are an append-only event stream,
+  but there is no fork, no counterfactual replay, and no diff. Its record
+  mode writes NDJSON of bridge traffic for parity testing, and its docs say
+  deterministic re-execution is not a protocol feature. The one borrowable
+  idea is the `thread/delta` vocabulary in
+  `docs/provider-bridge-protocol.md`: a small set of semantic timeline events
+  (turn.open, turn.boundary, item.open, item.close with a full item shape)
+  rather than raw provider traffic. Worth a skim when the attributed event
+  store that replaces the bare `{action, result}` list is designed.
 
 ## Status
 
