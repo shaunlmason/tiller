@@ -4,7 +4,7 @@ defmodule TillerTest do
   alias Tiller.{Actions, Driver, Event, FakeDriver, Session, State, Tools}
 
   setup do
-    State.clear()
+    Tiller.Lab.reset()
     :ok
   end
 

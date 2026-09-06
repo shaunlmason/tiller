@@ -48,6 +48,10 @@ Tiller (DynamicSupervisor)
   ways. A prefix walk with a normalizing equality (pids, refs, and stack
   traces are not divergence). The go/no-go spike for
   [the butterfly lab](docs/designs/agent-butterfly-lab.md); it passed.
+- **Lab** (`TillerWeb.LabLive`): one page, three panes. Timeline of every
+  session as turn chips, the selected turn's action and result, and the
+  race: pick a root and a fork turn, tick mutations, watch the branches
+  land live with their first divergence ringed.
 - **Fork and race** (`Tiller.Session.fork/4`, `Tiller.Lab.race/4`): fork a
   session at any turn under one mutation (`whitelist`, `driver`,
   `result_override`, `latency`), re-live the prefix through
@@ -129,14 +133,27 @@ Projects looked at while shaping tiller, with the verdict on each.
 
 ## Status
 
-Foundation for the butterfly lab: attributed event store, async sessions,
-`await/2`, divergence analysis, and the open-seed client. Run:
+The butterfly lab MVP: attributed event store, async sessions, replay,
+fork under four mutation axes, divergence analysis, a LiveView to watch
+the race, and the open-seed client. Run:
 
 ```sh
 mix test
 mix run -e 'Tiller.Demo.run()'          # root + subagent, a contained crash
 mix run -e 'Tiller.Demo.butterfly()'    # one run forked five ways at turn 1, raced, compared
+mix phx.server                          # the lab: http://localhost:4000
 ```
+
+The lab in action, forked at turn 1 under five mutations: the timeline on
+the left shows each branch's turns as they land (blue = replayed prefix),
+the middle pane is the selected turn, and the race on the right reports
+where each branch first diverged from its parent.
+
+![the butterfly lab](docs/designs/butterfly-lab.png)
+
+Dependencies are Phoenix and LiveView (with PubSub, Bandit, Jason), added
+for the lab's screen and nothing else: no Ecto, no asset pipeline, the
+client JS is served from the packages themselves.
 
 Against a real open-seed repo (one you instantiated from the template, with
 its `scripts/seed` shim and a ready card):

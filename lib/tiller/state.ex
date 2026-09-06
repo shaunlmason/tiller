@@ -8,10 +8,8 @@ defmodule Tiller.State do
   turn n.
 
   Subscribers (`subscribe/1`) get `{:tiller_event, %Tiller.Event{}}` on
-  every append for that session, or for every session with `:all`.
-  Delivery is a `Registry` dispatch: zero dependencies, same shape a
-  `Phoenix.PubSub` broadcast will have when the LiveView arrives (step 9);
-  `subscribe/1` is the seam.
+  every append for that session, or for every session with `:all`, over
+  `Phoenix.PubSub` (`Tiller.PubSub`; the LiveView subscribes to `:all`).
 
   In-memory, newest first internally, oldest first on every read. Move to
   ETS or a table when replay across restarts is needed.
@@ -20,7 +18,7 @@ defmodule Tiller.State do
 
   alias Tiller.Event
 
-  @registry Tiller.State.Registry
+  @pubsub Tiller.PubSub
 
   def child_spec(_opts \\ []), do: %{id: __MODULE__, start: {__MODULE__, :start_link, []}}
 
@@ -28,8 +26,8 @@ defmodule Tiller.State do
     GenServer.start_link(__MODULE__, [], Keyword.put(opts, :name, __MODULE__))
   end
 
-  @doc "The registry `subscribe/1` uses; started by the application."
-  def registry_spec, do: {Registry, keys: :duplicate, name: @registry}
+  @doc "The PubSub `subscribe/1` uses; started by the application."
+  def pubsub_spec, do: {Phoenix.PubSub, name: @pubsub}
 
   @doc "Append one event. Returns the stored event, `seq` assigned. `origin` is `:live` or `:replay`."
   @spec append(term, term, non_neg_integer, Event.action(), Event.result(), :live | :replay) :: {:ok, Event.t()}
@@ -64,12 +62,13 @@ defmodule Tiller.State do
 
   @doc "Receive `{:tiller_event, event}` for a session, or for `:all`."
   @spec subscribe(term) :: :ok
-  def subscribe(session_id) do
-    {:ok, _} = Registry.register(@registry, session_id, nil)
-    :ok
-  end
+  def subscribe(session_id), do: Phoenix.PubSub.subscribe(@pubsub, topic(session_id))
 
-  def unsubscribe(session_id), do: Registry.unregister(@registry, session_id)
+  def unsubscribe(session_id), do: Phoenix.PubSub.unsubscribe(@pubsub, topic(session_id))
+
+  defp topic(:all), do: "tiller:events"
+  defp topic(id) when is_binary(id), do: "tiller:session:" <> id
+  defp topic(id), do: "tiller:session:" <> inspect(id)
 
   @doc "Reset (tests)."
   def clear, do: GenServer.call(__MODULE__, :clear)
@@ -96,9 +95,7 @@ defmodule Tiller.State do
 
   defp publish(ev) do
     for key <- [ev.session_id, :all] do
-      Registry.dispatch(@registry, key, fn entries ->
-        for {pid, _} <- entries, do: send(pid, {:tiller_event, ev})
-      end)
+      Phoenix.PubSub.broadcast(@pubsub, topic(key), {:tiller_event, ev})
     end
   end
 end

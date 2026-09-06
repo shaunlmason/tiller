@@ -62,6 +62,16 @@ defmodule Tiller.Lab do
     end)
   end
 
+  @doc "Stop every session under the supervisor and clear the store: a fresh lab."
+  def reset do
+    sup = Tiller.Supervisor
+
+    for {_, pid, _, _} <- DynamicSupervisor.which_children(sup), is_pid(pid),
+        do: DynamicSupervisor.terminate_child(sup, pid)
+
+    Tiller.State.clear()
+  end
+
   @doc "One line per branch, for a terminal."
   def format(results) do
     Enum.map_join(results, "\n", fn

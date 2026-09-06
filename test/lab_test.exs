@@ -15,7 +15,7 @@ defmodule Tiller.LabTest do
   defp act(f, args \\ []), do: Driver.action(f, args)
 
   setup do
-    State.clear()
+    Tiller.Lab.reset()
     :ok
   end
 

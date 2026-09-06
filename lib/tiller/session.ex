@@ -27,7 +27,20 @@ defmodule Tiller.Session do
 
   @type status :: :idle | :running | :halted
 
+  @registry Tiller.Session.Registry
+
   ## API
+
+  @doc "The id registry; started by the application."
+  def registry_spec, do: {Registry, keys: :unique, name: @registry}
+
+  @doc "The pid of the live session with this id, or nil."
+  def whereis(id) do
+    case Registry.lookup(@registry, id) do
+      [{pid, _}] -> pid
+      [] -> nil
+    end
+  end
 
   @doc "Start the session (under a supervisor or standalone)."
   def start_link(opts) do
@@ -170,6 +183,8 @@ defmodule Tiller.Session do
 
     id = Keyword.get_lazy(opts, :id, fn -> "s-#{System.unique_integer([:positive, :monotonic])}" end)
     Process.put(:tiller_session_id, id)
+    # a reused id (a stale session still alive) is not fatal: whereis/1 then finds the older one
+    _ = Registry.register(@registry, id, nil)
 
     {:ok,
      %{

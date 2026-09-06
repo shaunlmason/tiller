@@ -405,8 +405,36 @@ the two plumbed axes, watched finishing at different times, with the
 first divergence reported. Everything but "watched" (the LiveView) is
 met, and four axes are live rather than two.
 
-Next: step 9, the LiveView (adds Phoenix; swap `State.subscribe/1` to
-`Phoenix.PubSub`). Then open question 5 for `kill_at`.
+## Step 9 (2026-09-06): the LiveView
+
+`mix phx.server`, then http://localhost:4000. One page
+(`lib/tiller_web/lab_live.ex`), three panes as designed: timeline left
+(every session as a row of turn chips: ok, error, replayed, halt, with
+the first divergence ringed), turn detail middle (action, result, and
+the parent's same turn for a branch), race right (pick the root and the
+fork turn, tick mutations, fork and race). The page subscribes to
+`State.subscribe(:all)` and paints each event as it lands, so the
+branches are visibly N things finishing at different times; the 300ms
+latency preset exists to make that obvious. Divergence is recomputed
+live per branch on each event; a branch shorter than its parent is
+"identical so far", not diverged, until it halts.
+
+Phoenix arrived as accepted (premise 5), kept small: phoenix,
+phoenix_live_view, phoenix_pubsub, bandit, jason, and lazy_html for
+tests. No Ecto, no esbuild, no node: the client JS is served from the
+two packages' `priv/static` by `Plug.Static`. `State.subscribe/1` now
+dispatches through `Phoenix.PubSub` as planned; the seam held and
+nothing above it changed. `Tiller.Session.whereis/1` (a unique
+`Registry`) lets the page find a session by id; `Tiller.Lab.reset/0`
+stops every supervised session and clears the store.
+
+**MVP: met.** Pick a turn in a recorded run, fan out to 4+ branches
+across the plumbed axes, watch them finish at different times in one
+LiveView, and have `Tiller.Divergence` report where each first
+diverged. Open question 4 (32 branches on one screen) is untouched: six
+presets fit; more would not.
+
+Next: step 10's remaining axis, `kill_at`, which is open question 5.
 
 ## What I noticed about how you think
 

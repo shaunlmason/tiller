@@ -1,8 +1,9 @@
 defmodule Tiller do
   @moduledoc """
-  Application start: State + DynamicSupervisor for sessions (incl. subagents),
-  plus the open-seed client when one is configured. See README.md for the
-  design.
+  Application start: PubSub, State, the session registry, the
+  DynamicSupervisor for sessions (incl. subagents and forks), the lab's
+  web endpoint (serving only under `mix phx.server`), plus the open-seed
+  client when one is configured. See README.md for the design.
 
   Configure the client with `config :tiller, :seed, cd: "/path/to/repo",
   actor: "tiller-1"` (options in `Tiller.Seed`), or start it yourself with
@@ -16,13 +17,15 @@ defmodule Tiller do
   def start(_type, _args) do
     children =
       [
-        Tiller.State.registry_spec(),
+        Tiller.State.pubsub_spec(),
         Tiller.State,
+        Tiller.Session.registry_spec(),
         %{
           id: Tiller.Supervisor,
           start: {DynamicSupervisor, :start_link,
                   [[strategy: :one_for_one, name: Tiller.Supervisor]]}
-        }
+        },
+        TillerWeb.Endpoint
       ] ++ seed_child(Application.get_env(:tiller, :seed))
 
     case Supervisor.start_link(children, strategy: :one_for_one) do
