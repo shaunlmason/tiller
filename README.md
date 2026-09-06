@@ -146,6 +146,10 @@ event store, async sessions, six tools, replay, fork on all five mutation
 axes, concurrent race, first divergence, decisive-mutation ranking, and the
 LiveView lab with the branch-by-turn grid, plus the open-seed client. Run:
 
+Locally, `mise install` reads `mise.toml`. In Claude Code on the web the
+SessionStart hook in `.claude/hooks/session-start.sh` installs prebuilt OTP
+and Elixir from builds.hex.pm and fetches deps before the session starts.
+
 ```sh
 mix deps.get
 mix test
