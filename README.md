@@ -44,6 +44,15 @@ Tiller (DynamicSupervisor)
 - **Actions** (`Tiller.Actions`): the registry. The grammar *is* the
   capability boundary — an agent can only touch what's in its whitelist.
   Subagents get a smaller whitelist and can't spawn (depth limit).
+- **Seed** (`Tiller.Seed`): an MCP stdio client for the
+  [open-seed](https://github.com/shaunlmason/open-seed) engine. The `seed_*`
+  tools (ready, get, claim, lease-renew, release, transition, evidence,
+  comment) call the task port over JSON-RPC; the port's refusals come back
+  as `{:refused, envelope}` with their exit class, so contention, a fenced
+  token, or an invalid transition are results in the log, not crashes.
+  Root sessions hold the worker verbs, subagents only the reads, and
+  operator verbs are on no whitelist. Design and the deferred alternatives:
+  [docs/designs/open-seed-integration.md](docs/designs/open-seed-integration.md).
 
 ### Deliberate limits (upgrade paths)
 
@@ -99,9 +108,25 @@ Projects looked at while shaping tiller, with the verdict on each.
 ## Status
 
 Scaffold: Mix project, State, Actions, FakeDriver, Session, supervisor,
-test + demo. Run:
+test + demo, plus the open-seed client. Run:
 
 ```sh
 mix test
 mix run -e 'Tiller.Demo.run()'
+```
+
+Against a real open-seed repo (one you instantiated from the template, with
+its `scripts/seed` shim and a ready card):
+
+```sh
+mix run -e 'Tiller.Demo.seed("os-<id>", cd: "../my-seed-repo", actor: "tiller-1")'
+```
+
+The integration test builds a throwaway repo on the engine's local SQLite
+backend and drives the real `seed mcp serve`:
+
+```sh
+test/support/seed_fixture.sh ../open-seed /path/to/seed /tmp/seed-fixture
+TILLER_SEED_CMD="/path/to/seed mcp serve" TILLER_SEED_DIR=/tmp/seed-fixture \
+  mix test --include integration
 ```
