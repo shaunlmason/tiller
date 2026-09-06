@@ -102,16 +102,23 @@ defmodule Tiller.Session do
         {:noreply, halt(s)}
 
       {:action, a, ctx} ->
-        result = Tiller.Actions.eval(a, s.whitelist)
-        {:ok, _event} = s.state.append(s.id, s.parent_id, s.turns, a, result)
-        send(self(), :turn)
-        {:noreply, %{s | ctx: ctx, turns: s.turns + 1}}
+        record(s, a, Tiller.Actions.eval(a, s.whitelist), ctx)
+
+      # Recorded prefix: the result is injected, the tool is not run.
+      {:replay, a, result, ctx} ->
+        record(s, a, result, ctx)
     end
   end
 
   # A subagent finished; its trajectory is in State under its own id.
   def handle_info({:subagent_halted, _pid, _n}, s), do: {:noreply, s}
   def handle_info(_other, s), do: {:noreply, s}
+
+  defp record(s, action, result, ctx) do
+    {:ok, _event} = s.state.append(s.id, s.parent_id, s.turns, action, result)
+    send(self(), :turn)
+    {:noreply, %{s | ctx: ctx, turns: s.turns + 1}}
+  end
 
   defp halt(s) do
     {:ok, _event} = s.state.append(s.id, s.parent_id, s.turns, :halt, {:halted, s.turns})
