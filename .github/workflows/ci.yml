@@ -1,0 +1,85 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  MIX_ENV: test
+  ELIXIR_ERL_OPTIONS: "+fnu"
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27.3"
+          elixir-version: "1.20.0"
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: mix-${{ runner.os }}-${{ hashFiles('mix.lock') }}
+          restore-keys: mix-${{ runner.os }}-
+
+      - run: mix deps.get
+      - run: mix compile --warnings-as-errors
+      - run: mix test
+
+  # The seed_* tools against the real open-seed engine: build the engine
+  # from source, instantiate the template on its local SQLite backend, and
+  # drive `seed mcp serve` from the tests marked :integration.
+  integration:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: shaunlmason/open-seed
+          path: .ci/open-seed
+
+      - uses: actions/checkout@v4
+        with:
+          repository: shaunlmason/open-seed-engine
+          path: .ci/open-seed-engine
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: build the engine
+        run: cd .ci/open-seed-engine && go build -o "$GITHUB_WORKSPACE/.ci/seed" ./cmd/seed
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27.3"
+          elixir-version: "1.20.0"
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: mix-${{ runner.os }}-${{ hashFiles('mix.lock') }}
+          restore-keys: mix-${{ runner.os }}-
+
+      - run: mix deps.get
+
+      - name: instantiate a seed repo on fastcards
+        run: test/support/seed_fixture.sh .ci/open-seed .ci/seed .ci/fixture
+
+      - name: integration tests
+        env:
+          TILLER_SEED_CMD: ${{ github.workspace }}/.ci/seed mcp serve
+          TILLER_SEED_DIR: ${{ github.workspace }}/.ci/fixture
+        run: mix test --include integration test/seed_integration_test.exs
