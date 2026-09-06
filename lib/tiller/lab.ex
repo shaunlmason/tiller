@@ -71,6 +71,60 @@ defmodule Tiller.Lab do
   end
 
   @doc """
+  A wide race from one session (open question 4): one mutation per axis
+  point that could matter for a fork at `turn`.
+
+    * `:whitelist`: the root whitelist minus each tool the parent actually
+      called at or after `turn`, one branch each (tools it never called
+      cannot change anything)
+    * `:override`: each replayed turn's result replaced with `{:ok, "overridden"}`
+    * `:kill`: a kill before each live turn
+    * `:latency`: `latencies:` (default `[50, 250]`)
+
+  Options: `axes:` (default all four), `latencies:`. Typically 10 to 40
+  branches for a short run: enough to need `clusters/1`.
+  """
+  @spec sweep(pid, non_neg_integer, keyword) :: [Mutation.t()]
+  def sweep(pid, turn, opts \\ []) do
+    axes = Keyword.get(opts, :axes, [:whitelist, :override, :kill, :latency])
+    %{id: id, whitelist: wl, turns: turns} = Session.info(pid)
+    events = Tiller.State.events(id) |> Enum.reject(&match?(%Event{action: :halt}, &1))
+
+    called =
+      events
+      |> Enum.filter(&(&1.turn >= turn))
+      |> Enum.map(fn %Event{action: {:call, _, f, args}} -> {f, length(args)} end)
+      |> Enum.uniq()
+
+    whitelist = if :whitelist in axes, do: for(fa <- called, fa in wl, do: {:whitelist, wl -- [fa]}), else: []
+    override = if :override in axes, do: for(t <- 0..(turn - 1)//1, do: {:result_override, t, {:ok, "overridden"}}), else: []
+    kill = if :kill in axes, do: for(t <- turn..(turns - 1)//1, do: {:kill_at, t}), else: []
+    latency = if :latency in axes, do: for(ms <- Keyword.get(opts, :latencies, [50, 250]), do: {:latency, ms}), else: []
+
+    whitelist ++ override ++ kill ++ latency
+  end
+
+  @doc """
+  Race results grouped by what happened (open question 4): branches that
+  diverged at the same turn are one cluster, identical branches another,
+  errors a third. `[{key, [result]}]`, best rank first, where key is
+  `{:diverged, turn}`, `:identical`, or `:error`.
+  """
+  def clusters(results) do
+    results
+    |> Enum.group_by(fn
+      %{error: _} -> :error
+      %{verdict: {:diverged, t, _, _}} -> {:diverged, t}
+      _ -> :identical
+    end)
+    |> Enum.sort_by(fn
+      {{:diverged, t}, _} -> {0, -t}
+      {:identical, _} -> {1, 0}
+      {:error, _} -> {2, 0}
+    end)
+  end
+
+  @doc """
   The smallest decisive mutation (open question 3).
 
   Axes are incommensurable, so no size is ever compared across axes.

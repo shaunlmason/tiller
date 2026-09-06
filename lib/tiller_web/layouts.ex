@@ -33,7 +33,14 @@ defmodule TillerWeb.Layouts do
           .turn.ok { background:var(--ok); } .turn.err { background:var(--err); } .turn.replay { background:var(--replay); } .turn.halt { background:var(--halt); }
           .turn.selected { outline:2px solid var(--sel); outline-offset:1px; }
           .turn.diverge { box-shadow:0 0 0 2px var(--div); }
-          .running { color:var(--ok); } .halted { color:var(--dim); }
+          .running { color:var(--ok); } .halted { color:var(--dim); } .dead { color:var(--err); }
+          .cluster { margin:0 0 10px 12px; padding:6px 8px; border-left:2px solid var(--line); }
+          .cluster-head { display:flex; gap:10px; align-items:baseline; margin-bottom:4px; }
+          .branch { display:grid; grid-template-columns: minmax(9em, 14em) minmax(8em, 1fr) 5em auto; gap:8px; align-items:center; padding:2px 0; border-top:1px solid var(--line); }
+          .branch .bid { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+          .branch .bmut { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+          .branch .turns { flex-wrap:nowrap; }
+          .branch .turn { min-width:18px; height:16px; padding:0 3px; font-size:10px; }
           pre { white-space:pre-wrap; word-break:break-word; background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:8px; margin:6px 0 12px; }
           .kv { color:var(--dim); } .kv b { color:var(--fg); font-weight:500; }
           label.m { display:block; margin:3px 0; cursor:pointer; }

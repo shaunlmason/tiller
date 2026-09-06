@@ -115,8 +115,11 @@ defmodule TillerWeb.LabLive do
      )}
   end
 
-  def handle_event("race", params, socket) do
-    socket = handle_event("configure", params, socket) |> elem(1)
+  def handle_event("race", params, socket), do: start_race(socket, params, :presets)
+  def handle_event("sweep", params, socket), do: start_race(socket, params, :sweep)
+
+  defp start_race(socket, params, kind) do
+    socket = handle_event("configure", Map.drop(params, ["_target"]), socket) |> elem(1)
     %{root: root, turn: turn, chosen: chosen} = socket.assigns
 
     case root && Session.whereis(root) do
@@ -124,10 +127,19 @@ defmodule TillerWeb.LabLive do
         {:noreply, put_flash(socket, :error, "no root session to fork; run the demo first")}
 
       pid ->
-        mutations = for {key, _label} <- @presets, key in chosen, do: mutation(key)
+        mutations =
+          case kind do
+            :presets -> for {key, _label} <- @presets, key in chosen, do: mutation(key)
+            :sweep -> Lab.sweep(pid, turn)
+          end
+
         lv = self()
         Task.start(fn -> send(lv, {:race_done, Lab.race(pid, turn, mutations, timeout: 30_000)}) end)
-        {:noreply, assign(socket, race: %{parent: root, turn: turn, mutations: mutations, results: nil, done: false, started_seq: last_seq(socket.assigns.events)})}
+
+        {:noreply,
+         assign(socket,
+           race: %{parent: root, turn: turn, mutations: mutations, results: nil, done: false, started_seq: last_seq(socket.assigns.events), kind: kind}
+         )}
     end
   end
 
@@ -175,6 +187,51 @@ defmodule TillerWeb.LabLive do
 
   defp diverge_turn({:diverged, t, _, _}), do: t
   defp diverge_turn(_), do: nil
+
+  # timeline grouping (open question 4): roots stand alone; branches
+  # cluster by their comparison parent and what happened to them
+  defp cluster_key(events, id, parent_id) do
+    case live_verdict(events, id, parent_id) do
+      {:diverged, t, _, _} -> {:diverged, t}
+      {:killed, t} -> {:killed, t}
+      :identical -> :identical
+      _ -> :running
+    end
+  end
+
+  defp cluster_label({:diverged, t}), do: "diverged at turn #{t}"
+  defp cluster_label({:killed, t}), do: "killed before turn #{t}"
+  defp cluster_label(:identical), do: "identical"
+  defp cluster_label(:running), do: "running"
+
+  defp result_key(:error), do: {:killed, 0}
+  defp result_key(k), do: k
+
+  defp cluster_class({:diverged, _}), do: "diverged"
+  defp cluster_class({:killed, _}), do: "error"
+  defp cluster_class(:identical), do: "identical"
+  defp cluster_class(:running), do: "pending"
+
+  # [{root_id, root_evs, [{cluster_key, [{id, evs}]}]}]
+  defp grouped(events, sessions) do
+    roots = for {id, nil, evs} <- sessions, do: {id, evs}
+
+    Enum.map(roots, fn {root, evs} ->
+      branches = for {id, p, bevs} <- sessions, p != nil, compare_parent(id) == root, do: {id, bevs}
+
+      clusters =
+        branches
+        |> Enum.group_by(fn {id, _} -> cluster_key(events, id, root) end)
+        |> Enum.sort_by(fn
+          {:running, _} -> {0, 0}
+          {{:diverged, t}, _} -> {1, -t}
+          {{:killed, t}, _} -> {2, -t}
+          {:identical, _} -> {3, 0}
+        end)
+
+      {root, evs, clusters}
+    end)
+  end
 
   defp pick_root(socket) do
     roots = for {id, nil, _} <- sessions(socket.assigns.events), do: id
@@ -268,7 +325,7 @@ defmodule TillerWeb.LabLive do
           []
       end
 
-    assigns = assign(assigns, sessions: sessions, race_branches: race_branches)
+    assigns = assign(assigns, sessions: sessions, race_branches: race_branches, grouped: grouped(assigns.events, sessions))
 
     ~H"""
     <header>
@@ -292,28 +349,42 @@ defmodule TillerWeb.LabLive do
       <section id="timeline">
         <h2>timeline</h2>
         <p :if={@sessions == []} class="kv">no sessions yet: run the demo root, then fork it on the right.</p>
-        <div :for={{id, parent_id, evs} <- @sessions} class="session" id={"session-#{id}"}>
-          <div class="name">
-            <span><b>{id}</b> <span :if={parent_id} class="meta">{lineage_text(id)}</span></span>
-            <span class={status(id, evs)}>{status(id, evs)}
-              <button :if={status(id, evs) == "dead" and Session.final(id) == id} phx-click="resume" phx-value-session={id} style="margin-left:6px;padding:1px 6px">resume</button></span>
+        <div :for={{root, evs, clusters} <- @grouped}>
+          <div class="session" id={"session-#{root}"}>
+            <div class="name">
+              <span><b>{root}</b></span>
+              <span class={status(root, evs)}>{status(root, evs)}
+                <button :if={status(root, evs) == "dead" and Session.final(root) == root} phx-click="resume" phx-value-session={root} style="margin-left:6px;padding:1px 6px">resume</button></span>
+            </div>
+            <div class="turns">
+              <span
+                :for={ev <- evs}
+                class={"turn #{kind(ev)} #{if @selected == {root, ev.turn}, do: "selected"}"}
+                phx-click="select" phx-value-session={root} phx-value-turn={ev.turn} title={short_action(ev.action)}
+              >{ev.turn}</span>
+            </div>
           </div>
-          <div :if={parent_id} class="meta">
-            {case meta(id) do
-              %{mutation: m, fork_turn: t} when not is_nil(m) -> "fork@#{t} #{Mutation.label(m)}"
-              _ -> ""
-            end}
-            <span class={"verdict #{verdict_class(live_verdict(@events, id, compare_parent(id)))}"}>{verdict_text(live_verdict(@events, id, compare_parent(id)))}</span>
-          </div>
-          <div class="turns">
-            <span
-              :for={ev <- evs}
-              class={"turn #{kind(ev)} #{if @selected == {id, ev.turn}, do: "selected"} #{if diverge_turn(live_verdict(@events, id, compare_parent(id))) == ev.turn, do: "diverge"}"}
-              phx-click="select"
-              phx-value-session={id}
-              phx-value-turn={ev.turn}
-              title={short_action(ev.action)}
-            >{ev.turn}</span>
+          <div :for={{key, members} <- clusters} class="cluster">
+            <div class="cluster-head">
+              <span class={"verdict #{cluster_class(key)}"}>{cluster_label(key)}</span>
+              <span class="meta">{length(members)} {if length(members) == 1, do: "branch", else: "branches"} of {root}</span>
+            </div>
+            <div :for={{id, bevs} <- Enum.sort_by(members, fn {_, e} -> hd(e).seq end)} class="branch" id={"session-#{id}"}>
+              <span class="bid" title={lineage_text(id)}>{id}</span>
+              <span class="meta bmut">{case meta(id) do
+                %{mutation: m, fork_turn: t} when not is_nil(m) -> "fork@#{t} #{Mutation.label(m)}"
+                _ -> ""
+              end}</span>
+              <span class={"bstatus #{status(id, bevs)}"}>{status(id, bevs)}
+                <button :if={status(id, bevs) == "dead" and Session.final(id) == id} phx-click="resume" phx-value-session={id} style="margin-left:4px;padding:0 5px">resume</button></span>
+              <span class="turns">
+                <span
+                  :for={ev <- bevs}
+                  class={"turn #{kind(ev)} #{if @selected == {id, ev.turn}, do: "selected"} #{if diverge_turn(live_verdict(@events, id, compare_parent(id))) == ev.turn, do: "diverge"}"}
+                  phx-click="select" phx-value-session={id} phx-value-turn={ev.turn} title={short_action(ev.action)}
+                >{ev.turn}</span>
+              </span>
+            </div>
           </div>
         </div>
       </section>
@@ -355,7 +426,9 @@ defmodule TillerWeb.LabLive do
           <label :for={{key, label} <- @presets} class="m">
             <input type="checkbox" name="mutations[]" value={key} checked={key in @chosen} /> {label}
           </label>
-          <p><button type="submit">fork and race</button></p>
+          <p><button type="submit">fork and race</button>
+             <button type="button" phx-click="sweep" phx-value-turn={@turn} phx-value-root={@root}>sweep</button>
+             <span class="kv">sweep: one branch per tool the run used, per replayed turn overridden, per live turn killed, plus two latencies</span></p>
         </form>
 
         <%= if @race do %>
@@ -364,6 +437,22 @@ defmodule TillerWeb.LabLive do
             smallest decisive mutation: <b>{@race.results |> Lab.smallest() |> Enum.map_join(", ", &Mutation.label(&1.mutation))}</b>
             (latest divergence, turn {@race.results |> Lab.smallest() |> hd() |> then(fn %{verdict: {:diverged, t, _, _}} -> t end)})
           </p>
+          <%= if @race.results && length(@race.results) > 5 do %>
+            <p class="kv">{length(@race.results)} branches in {length(Lab.clusters(@race.results))} clusters</p>
+            <table>
+              <tr><th>#</th><th>cluster</th><th>branches</th><th>mutations</th></tr>
+              <tr :for={{key, members} <- Lab.clusters(@race.results)}>
+                <td>{case Enum.reject(Enum.map(members, &Map.get(&1, :rank)), &is_nil/1) do [] -> "--"; ranks -> "##{Enum.min(ranks)}" end}</td>
+                <td class={"verdict #{cluster_class(result_key(key))}"}>{case key do
+                  {:diverged, t} -> "diverged at turn #{t}"
+                  :identical -> "identical"
+                  :error -> "not run"
+                end}</td>
+                <td>{length(members)}</td>
+                <td>{Enum.map_join(members, ", ", &Mutation.label(&1.mutation))}</td>
+              </tr>
+            </table>
+          <% end %>
           <table>
             <tr><th>#</th><th>mutation</th><th>branch</th><th>state</th><th>verdict</th></tr>
             <%= if @race.results do %>

@@ -499,8 +499,30 @@ smallest decisive mutation above it. This is a partial order with no
 invented weights; the hand-assigned-weights alternative stays
 available as a `key:`-style option if someone needs a total order.
 
-Remaining: open question 4 (32 branches on one screen), stretch,
-untouched.
+## Open question 4 (2026-09-06): 32 branches on one screen
+
+**Decided: cluster, do not tile.** Thirty-two branches are rarely
+thirty-two different things. In every race so far they fall into a
+handful of outcomes, and an outcome is what the reader wants: which
+mutations diverged at turn 1, which changed nothing. So the timeline
+groups a root's branches by what happened to them (`running`,
+`diverged at turn t`, `killed before turn t`, `identical`), one compact
+single-line row per branch inside its group, and the race table adds a
+cluster summary (best rank, count, mutation labels) above the per-branch
+rows when there are more than a few. `Tiller.Lab.clusters/1` is the
+same grouping for a terminal.
+
+To have thirty-two branches to show, `Tiller.Lab.sweep/3` generates a
+wide race from one session: the root whitelist minus each tool the run
+actually called at or after the fork turn (a tool never called cannot
+change anything), each replayed turn overridden, a kill before each
+live turn, and two latencies. The demo run forked at turn 1 sweeps to
+eight branches in four clusters; a longer run with more tools reaches
+thirty-plus, and the screen does not change shape. The `sweep` button
+on the race form runs it.
+
+Every open question in this design is now answered and every step
+built. What is beyond the design is below.
 
 ## Beyond the design (2026-09-06): persistence
 

@@ -71,14 +71,33 @@ defmodule TillerWeb.LabLiveTest do
     assert html =~ "<td>--</td><td>whitelist=root</td>"
     assert html =~ ~r/root-\d+\/f1-\d+ -&gt; root-\d+\/f1-\d+\/r\d+/
     assert html =~ "resumed from"
-    assert html =~ ~s(class="dead")
-    # the resumed session is judged against the root, not the dead branch it resumed
-    [resumed_block] = Regex.run(~r/<div class="session" id="session-[^"]+\/r\d+">.*?<\/div><\/div>/s, html)
-    assert resumed_block =~ "verdict identical"
+    assert html =~ ~r/class="(bstatus )?dead"/
+    # branches are clustered by what happened to them
+    assert html =~ ~r/diverged at turn 1<\/span>\s*<span class="meta">1 branch of/
+    assert html =~ ~r/identical<\/span>\s*<span class="meta">\d branch/
+    # the resumed session is judged against the root, not the dead branch it resumed:
+    # it sits in the identical cluster, which renders after every diverged one
+    assert html =~ ~r/identical<\/span>\s*<span class="meta">\d branch(es)? of[\s\S]*?id="session-root-\d+\/f1-\d+\/r\d+"/
     # the branches are on the timeline, attributed to the root
     assert html =~ "forked from #{root_id}"
     # the first divergence is marked on a chip
     assert html =~ "diverge"
+  end
+
+  test "sweep: a wide race lands as clusters, not thirty cards" do
+    {:ok, view, _} = live(build_conn(), "/")
+    render_click(view, "run-demo")
+    eventually(fn -> render(view) =~ "halted" end)
+    [root_id] = Regex.run(~r/session-(root-\d+)/, render(view), capture: :all_but_first)
+
+    render_click(view, "sweep", %{"turn" => "1", "root" => root_id})
+    eventually(fn -> render(view) =~ "at turn <b>1</b>: done" end, 300)
+    html = render(view)
+
+    assert [n, c] = Regex.run(~r/(\d+) branches in (\d+) clusters/, html, capture: :all_but_first)
+    assert String.to_integer(n) >= 6
+    assert String.to_integer(c) in 2..4
+    assert html =~ "<th>cluster</th>"
   end
 
   test "running a Claude root without a key is a flash, not a crash" do

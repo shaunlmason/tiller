@@ -161,6 +161,28 @@ defmodule Tiller.LabTest do
     assert :identical = Tiller.Divergence.first_diff(State.events("root"), State.events(r2))
   end
 
+  test "sweep generates one branch per axis point that could matter, and clusters group the outcome" do
+    pid = root([act(:echo, ["plan"]), act(:fail), act(:echo, ["recover"]), act(:echo, ["done"])])
+    mutations = Lab.sweep(pid, 1)
+
+    # tools the run called at or after turn 1: fail/0 and echo/1 (two branches); one replayed turn to
+    # override; live turns 1..3 to kill; two latencies
+    assert Enum.count(mutations, &match?({:whitelist, _}, &1)) == 2
+    assert [{:result_override, 0, _}] = Enum.filter(mutations, &match?({:result_override, _, _}, &1))
+    assert [{:kill_at, 1}, {:kill_at, 2}, {:kill_at, 3}] = Enum.filter(mutations, &match?({:kill_at, _}, &1))
+    assert [{:latency, 50}, {:latency, 250}] = Enum.filter(mutations, &match?({:latency, _}, &1))
+    assert Lab.sweep(pid, 1, axes: [:kill]) |> length() == 3
+
+    results = Lab.race(pid, 1, mutations, timeout: 10_000)
+    clusters = Lab.clusters(results)
+    keys = Enum.map(clusters, &elem(&1, 0))
+    # the two whitelist removals diverge at turn 1 (fail refused) and turn 2 (echo refused);
+    # the override diverges at 0; kills and latencies come back identical
+    assert [{:diverged, 2}, {:diverged, 1}, {:diverged, 0}, :identical] = keys
+    assert length(Keyword.get(clusters, :identical)) == 5
+    assert Enum.all?(results, &(&1.outcome == {:halted, 4} or &1.outcome == {:halted, 4}))
+  end
+
   defp eventually(fun, tries \\ 100) do
     cond do
       fun.() -> :ok

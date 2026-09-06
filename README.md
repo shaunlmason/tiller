@@ -53,9 +53,11 @@ Tiller (DynamicSupervisor)
   traces are not divergence). The go/no-go spike for
   [the butterfly lab](docs/designs/agent-butterfly-lab.md); it passed.
 - **Lab** (`TillerWeb.LabLive`): one page, three panes. Timeline of every
-  session as turn chips, the selected turn's action and result, and the
-  race: pick a root and a fork turn, tick mutations, watch the branches
-  land live with their first divergence ringed.
+  session as turn chips, branches clustered under their root by outcome,
+  the selected turn's action and result, and the race: pick a root and a
+  fork turn, tick mutations (or sweep every axis point that could matter),
+  watch the branches land live with their first divergence ringed and the
+  smallest decisive mutation named.
 - **Fork and race** (`Tiller.Session.fork/4`, `Tiller.Lab.race/4`): fork a
   session at any turn under one mutation (`whitelist`, `driver`,
   `result_override`, `latency`, `kill_at`), re-live the prefix through
@@ -174,6 +176,12 @@ the middle pane is the selected turn, and the race on the right reports
 where each branch first diverged from its parent.
 
 ![the butterfly lab](docs/designs/butterfly-lab.png)
+
+A sweep of the same run: every tool it called removed one at a time, the
+replayed turn overridden, a kill before each live turn, two latencies;
+the branches land as clusters by outcome.
+
+![a sweep, clustered](docs/designs/butterfly-lab-sweep.png)
 
 Dependencies are Phoenix and LiveView (with PubSub, Bandit, Jason), added
 for the lab's screen and nothing else: no Ecto, no asset pipeline, the
