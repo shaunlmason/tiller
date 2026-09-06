@@ -1,5 +1,12 @@
 defmodule Tiller.Demo do
-  @moduledoc "End-to-end demo: root session spawns a subagent; a tool crash is contained."
+  @moduledoc """
+  End-to-end demos.
+
+    * `run/0`: root session spawns a subagent; a tool crash is contained.
+    * `seed/1`: the same loop driving open-seed through `Tiller.Seed`:
+      claim a ready card, renew, comment, release, and log the port's
+      answer to a stale token as data.
+  """
 
   def run do
     Tiller.State.clear()
@@ -16,12 +23,45 @@ defmodule Tiller.Demo do
       Tiller.Session.start_link(driver: Tiller.FakeDriver, ctx: root_ctx)
 
     Tiller.Session.run(pid)
+    print_log("tiller demo")
+  end
 
-    IO.puts("=== tiller demo: action log ===")
+  @doc """
+  Drive the open-seed port. `opts` go to `Tiller.Seed.start_link/1`:
+  `cd:` an instantiated open-seed repo, `command:` (default
+  `["scripts/seed", "mcp", "serve"]`), `actor:`. `task` is a ready card id.
+
+      mix run -e 'Tiller.Demo.seed("os-1a2b3c4d", cd: "../my-seed-repo", actor: "tiller-1")'
+  """
+  def seed(task, opts) do
+    Tiller.State.clear()
+    {:ok, client} = Tiller.Seed.start_link(opts)
+
+    # The driver keeps the token: it is data the port handed back, and
+    # every later worker verb is fenced on it. A scripted driver cannot
+    # read its own log, so claim first and script the rest around it.
+    {:ok, %{"claim_token" => tok}} = Tiller.Tools.seed_claim(task)
+
+    ctx = Tiller.FakeDriver.context([
+      Tiller.Driver.action(:seed_get, [task]),
+      Tiller.Driver.action(:seed_lease_renew, [task, "stale-token"]),  # exit 6: fenced out, logged, not fatal
+      Tiller.Driver.action(:seed_lease_renew, [task, tok]),
+      Tiller.Driver.action(:seed_comment, [task, "tiller was here", tok]),
+      Tiller.Driver.action(:seed_release, [task, tok])
+    ])
+
+    {:ok, pid} = Tiller.Session.start_link(driver: Tiller.FakeDriver, ctx: ctx)
+    Tiller.Session.run(pid)
+    GenServer.stop(client)
+    print_log("tiller seed demo")
+  end
+
+  defp print_log(title) do
+    IO.puts("=== #{title}: action log ===")
 
     for {a, r} <- Tiller.State.log() do
       IO.puts(inspect(a))
-      IO.puts("  -> " <> inspect(r))
+      IO.puts("  -> " <> inspect(r, limit: 12))
     end
 
     IO.puts("=== done ===")
