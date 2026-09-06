@@ -9,8 +9,12 @@ defmodule Tiller.State do
 
   Subscribers get `{:tiller_event, event}` for every append to the session
   they subscribed to (or `:all`). This is what `Tiller.Session.await/2` and
-  the tests build on instead of sleeping. A Phoenix.PubSub broadcast can
-  replace the subscriber map when LiveView arrives.
+  the lab build on instead of sleeping or polling.
+
+  Sessions also park a per-turn snapshot here (driver context and tool
+  state as they were before the turn ran). Keeping it outside the session
+  process is what lets a killed session resume and a fork start from any
+  turn of a session that is no longer alive.
 
   ponytail: in-memory, newest first internally so append is O(1). Move to
   ETS/Ecto when you need replay across restarts.
@@ -29,7 +33,7 @@ defmodule Tiller.State do
   @impl true
   def init(_), do: {:ok, initial()}
 
-  defp initial, do: %{seq: 0, events: [], subs: %{}}
+  defp initial, do: %{seq: 0, events: [], subs: %{}, snapshots: %{}}
 
   @doc "Append an attributed event. Returns the stored event with its `seq`."
   @spec append(binary, binary | nil, non_neg_integer, Event.action() | :halt, Event.result()) ::
@@ -50,7 +54,20 @@ defmodule Tiller.State do
   @spec subscribe(binary | :all) :: :ok
   def subscribe(session_id), do: GenServer.call(__MODULE__, {:subscribe, session_id, self()})
 
-  @doc "Reset (tests, demo). Drops events and subscriptions."
+  @doc "Stop receiving events for `session_id` (or `:all`)."
+  @spec unsubscribe(binary | :all) :: :ok
+  def unsubscribe(session_id), do: GenServer.call(__MODULE__, {:unsubscribe, session_id, self()})
+
+  @doc "Park the state a session had before `turn` ran: `%{ctx: term, tool_state: map}`."
+  @spec snapshot(binary, non_neg_integer, map) :: :ok
+  def snapshot(session_id, turn, snap),
+    do: GenServer.call(__MODULE__, {:snapshot, session_id, turn, snap})
+
+  @doc "The snapshot taken before `turn` of `session_id`, if any."
+  @spec snapshot(binary, non_neg_integer) :: {:ok, map} | :error
+  def snapshot(session_id, turn), do: GenServer.call(__MODULE__, {:snapshot, session_id, turn})
+
+  @doc "Reset (tests, demo). Drops events, snapshots and subscriptions."
   def clear, do: GenServer.call(__MODULE__, :clear)
 
   @impl true
@@ -81,6 +98,23 @@ defmodule Tiller.State do
 
   def handle_call({:subscribe, key, pid}, _from, s) do
     {:reply, :ok, update_in(s.subs, &Map.update(&1, key, [pid], fn pids -> [pid | pids] end))}
+  end
+
+  def handle_call({:unsubscribe, key, pid}, _from, s) do
+    {:reply, :ok,
+     update_in(s.subs, &Map.update(&1, key, [], fn pids -> List.delete(pids, pid) end))}
+  end
+
+  def handle_call({:snapshot, session_id, turn, snap}, _from, s) do
+    {:reply, :ok,
+     update_in(
+       s.snapshots,
+       &Map.update(&1, session_id, %{turn => snap}, fn m -> Map.put(m, turn, snap) end)
+     )}
+  end
+
+  def handle_call({:snapshot, session_id, turn}, _from, s) do
+    {:reply, s.snapshots |> Map.get(session_id, %{}) |> Map.fetch(turn), s}
   end
 
   def handle_call(:clear, _from, _s), do: {:reply, :ok, initial()}

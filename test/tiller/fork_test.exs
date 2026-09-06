@@ -21,9 +21,10 @@ defmodule Tiller.ForkTest do
   end
 
   defp run_branch(pid) do
+    {:ok, id} = Session.id_of(pid)
     Session.run(pid)
-    {:halted, _} = Session.await(pid)
-    State.events(Session.info(pid).id)
+    {:halted, _} = Session.await(id)
+    State.events(id)
   end
 
   test "a control fork reproduces the source from its snapshot, in isolation" do
@@ -81,15 +82,40 @@ defmodule Tiller.ForkTest do
              Session.fork(orig, 2, {:result_override, 2, :x})
   end
 
-  test "latency mutation slows the branch; kill_at is refused" do
+  test "latency mutation slows the branch" do
     {orig, _original} = record()
 
     {:ok, branch} = Session.fork(orig, 0, {:latency, 30})
     {us, _} = :timer.tc(fn -> run_branch(branch) end)
     assert us >= 3 * 30_000
 
-    assert {:error, {:unsupported, :kill_at}} = Session.fork(orig, 0, {:kill_at, 1})
     assert {:error, {:no_snapshot, 99}} = Session.fork(orig, 99, nil)
+    assert {:error, {:kill_inside_prefix, 0, 2}} = Session.fork(orig, 2, {:kill_at, 0})
+  end
+
+  test "kill mutation: the branch dies after acting, resumes, and the world saw it twice" do
+    {orig, original} = record()
+
+    {:ok, branch} = Session.fork(orig, 0, {:kill_at, 1})
+    id = Session.info(branch).id
+    Session.run(branch)
+    assert {:halted, 3} = Session.await(id)
+
+    # Restarted under a new pid, same id, resumed at the killed turn.
+    resumed = Session.whereis(id)
+    assert is_pid(resumed) and resumed != branch
+    assert %{resumed: true, turns: 3, kill_at: 1} = Session.info(id)
+
+    # spend(4) ran before the kill and again after the resume: the log has
+    # it once, the budget paid twice.
+    replayed = State.events(id)
+
+    assert {:diverged, 1, %Event{result: {:ok, {:remaining, 6}}},
+            %Event{result: {:ok, {:remaining, 2}}}} =
+             Divergence.first_diff(original, replayed)
+
+    assert Enum.map(replayed, & &1.action) == Enum.map(original, & &1.action)
+    assert ToolState.snapshot() == ToolState.snapshot(ToolState)
   end
 
   test "branches race concurrently under the supervisor" do
@@ -100,12 +126,19 @@ defmodule Tiller.ForkTest do
       nil,
       {:whitelist, no_spend},
       {:driver, FakeDriver, FakeDriver.context([])},
-      {:latency, 20}
+      {:latency, 20},
+      {:kill_at, 2}
     ]
 
     branches = for m <- mutations, do: elem(Session.fork(orig, 1, m), 1)
+    ids = Enum.map(branches, &elem(Session.id_of(&1), 1))
     Enum.each(branches, &Session.run/1)
-    results = Enum.map(branches, &run_branch/1)
+
+    results =
+      for id <- ids do
+        {:halted, _} = Session.await(id)
+        State.events(id)
+      end
 
     verdicts =
       for r <- results do
@@ -115,8 +148,9 @@ defmodule Tiller.ForkTest do
         end
       end
 
-    assert verdicts == [:identical, {:diverged, 1}, {:diverged, 1}, :identical]
+    assert verdicts == [:identical, {:diverged, 1}, {:diverged, 1}, :identical, :identical]
 
-    assert Enum.map(branches, &Session.info(&1).id) == ~w(orig@1.0 orig@1.1 orig@1.2 orig@1.3)
+    assert Enum.map(results, &List.first(&1).session_id) ==
+             ~w(orig@1.0 orig@1.1 orig@1.2 orig@1.3 orig@1.4)
   end
 end

@@ -5,7 +5,9 @@ defmodule Tiller.ToolState do
   One Agent holds everything (key-value store, spend budget, flaky-call
   counter). The application starts a global instance that root sessions
   share; a forked branch gets its own instance seeded from a snapshot, so
-  concurrent branches never share a budget. Tools find theirs through
+  concurrent branches never share a budget. Branch instances live under
+  `Tiller.ToolStates`, not linked to their session, so a killed session
+  finds its world still there when it resumes. Tools find theirs through
   `current/0`, which the owning session sets in its process dictionary.
   Defaults are fixed so trajectories are reproducible.
   """
@@ -14,8 +16,15 @@ defmodule Tiller.ToolState do
   @default_budget 10
   @flaky_every 3
 
-  def child_spec(_opts \\ []),
-    do: %{id: __MODULE__, start: {__MODULE__, :start_link, [[name: __MODULE__]]}}
+  def child_spec(opts \\ []) do
+    opts = Keyword.put_new(opts, :name, __MODULE__)
+
+    %{
+      id: Keyword.fetch!(opts, :name),
+      start: {__MODULE__, :start_link, [opts]},
+      restart: :transient
+    }
+  end
 
   @doc "Start an instance. Options: `:initial` (a snapshot map), `:name`."
   def start_link(opts \\ []) do

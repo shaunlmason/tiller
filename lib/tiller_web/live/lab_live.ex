@@ -149,8 +149,7 @@ defmodule TillerWeb.LabLive do
       </button>
       <button phx-click="reset">Reset</button>
       <span class="tag">
-        {if @total > 0, do: "#{@total} events recorded", else: "no run yet"} ·
-        {length(@branches)} branches
+        {if @total > 0, do: "#{@total} events recorded", else: "no run yet"} · {length(@branches)} branches
       </span>
     </header>
     <main>
@@ -206,7 +205,9 @@ defmodule TillerWeb.LabLive do
             <span>{b.id}</span>
             <span class="tag">{mutation_text(b.mutation)}</span>
           </h3>
-          <div class={"bar #{verdict_class(b.verdict)}"}><i style={"width: #{progress(b, @total)}%"}></i></div>
+          <div class={"bar #{verdict_class(b.verdict)}"}>
+            <i style={"width: #{progress(b, @total)}%"}></i>
+          </div>
           <div>
             <span class={if match?({:diverged, _, _, _}, b.verdict), do: "err", else: "ok"}>
               {verdict_text(b.verdict)}

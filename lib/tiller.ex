@@ -11,9 +11,9 @@ defmodule Tiller do
   drop all events, reset the global tool state. Tests and the demo call this.
   """
   def reset do
-    sup = Tiller.Supervisor
-
-    for {_, pid, _, _} <- DynamicSupervisor.which_children(sup), is_pid(pid) do
+    for sup <- [Tiller.Supervisor, Tiller.ToolStates],
+        {_, pid, _, _} <- DynamicSupervisor.which_children(sup),
+        is_pid(pid) do
       DynamicSupervisor.terminate_child(sup, pid)
     end
 
@@ -28,6 +28,7 @@ defmodule Tiller do
       Tiller.State,
       Tiller.ToolState,
       {Registry, keys: :unique, name: Tiller.Registry},
+      {DynamicSupervisor, strategy: :one_for_one, name: Tiller.ToolStates},
       {Phoenix.PubSub, name: Tiller.PubSub},
       TillerWeb.Endpoint,
       %{

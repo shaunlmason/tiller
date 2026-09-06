@@ -29,6 +29,7 @@ defmodule TillerTest do
     Session.run(pid)
     assert {:halted, 1} = Session.await(pid)
     assert {:halted, 1} = Session.await(pid)
+    assert {:error, :noproc} = Session.await(spawn(fn -> :ok end))
   end
 
   test "a tool crash is contained and logged" do

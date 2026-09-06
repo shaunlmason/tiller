@@ -7,7 +7,7 @@ defmodule Tiller.Session do
     ctx:        initial driver context (opaque)
     whitelist:  actions this session may call (root gets spawn_subagent,
                 subagents do not; that's the depth limit)
-    state:      the Tiller.State module (or any {append/5, events/1} impl)
+    state:      the Tiller.State module (or any impl of its API)
     id:         session id (binary); defaults to a unique one
     parent_id:  id of the session that spawned or forked this one; nil for root
     parent:     optional pid; gets {:subagent_halted, self, n} on halt
@@ -15,25 +15,35 @@ defmodule Tiller.Session do
                 map to start an isolated instance from (forks); default is
                 the global instance
     latency:    milliseconds to wait between turns (the latency mutation)
+    kill_at:    turn at which the process dies after acting, before logging
+                (the kill mutation); see "Kill and resume" below
     mutation:   the Tiller.Mutation this branch carries, for info/1
 
   Loop: `run/1` casts; each turn is one `:turn` message to self, so the
-  process is observable (and mutable) between turns. A turn snapshots the
-  driver context and tool state, asks the driver for the next action,
-  evaluates it against the whitelist, appends an attributed `Tiller.Event`,
-  and schedules the next turn until `:halt`. A tool that crashes becomes
-  data in the log; the driver decides what to do with it. `await/2` blocks
-  the caller until the session halts.
+  process is observable (and mutable) between turns. A turn parks a
+  snapshot of the driver context and tool state in `Tiller.State`, asks the
+  driver for the next action, evaluates it against the whitelist, appends
+  an attributed `Tiller.Event`, and schedules the next turn until `:halt`.
+  A tool that crashes becomes data in the log; the driver decides what to
+  do with it. `await/2` blocks the caller until the session halts.
 
   `fork/4` starts a branch from any turn: the branch replays the events up
   to that turn with recorded results (`Tiller.Driver.Replay`), starts from
   the tool state snapshot taken at that turn, and continues with the
   source's driver and context as they were at that turn, or with whatever
   the mutation says instead.
+
+  Kill and resume: when the supervisor restarts a session whose events are
+  already in the store, `init/1` resumes it from the snapshot taken before
+  the turn that was in flight, with the same id, turn counter and tool
+  state. That turn runs again. Its tool already ran once before the kill,
+  so the world sees the action twice while the log shows it once. That is
+  the at-least-once hazard of supervised agents, and what `kill_at` exists
+  to expose.
   """
   use GenServer
 
-  alias Tiller.{Mutation, ToolState}
+  alias Tiller.{Event, Mutation, ToolState}
   alias Tiller.Driver.Replay
 
   @type id :: binary
@@ -42,42 +52,117 @@ defmodule Tiller.Session do
   def init(opts) do
     id = Keyword.get_lazy(opts, :id, &unique_id/0)
     Process.put(:tiller_session_id, id)
-    ToolState.bind(tool_state(Keyword.get(opts, :tool_state)))
+    state = Keyword.get(opts, :state, Tiller.State)
 
-    {:ok,
-     %{
-       id: id,
-       parent_id: Keyword.get(opts, :parent_id),
-       driver: Keyword.fetch!(opts, :driver),
-       ctx: Keyword.fetch!(opts, :ctx),
-       whitelist: Keyword.get(opts, :whitelist, Tiller.Actions.root_whitelist()),
-       state: Keyword.get(opts, :state, Tiller.State),
-       parent: Keyword.get(opts, :parent),
-       latency: Keyword.get(opts, :latency, 0),
-       mutation: Keyword.get(opts, :mutation),
-       turns: 0,
-       status: :idle,
-       waiters: [],
-       snapshots: %{},
-       forks: 0
-     }}
+    s = %{
+      id: id,
+      parent_id: Keyword.get(opts, :parent_id),
+      driver: Keyword.fetch!(opts, :driver),
+      ctx: Keyword.fetch!(opts, :ctx),
+      whitelist: Keyword.get(opts, :whitelist, Tiller.Actions.root_whitelist()),
+      state: state,
+      parent: Keyword.get(opts, :parent),
+      latency: Keyword.get(opts, :latency, 0),
+      kill_at: Keyword.get(opts, :kill_at),
+      mutation: Keyword.get(opts, :mutation),
+      turns: 0,
+      status: :idle,
+      waiters: [],
+      forks: 0,
+      resumed: false
+    }
+
+    tool_opt = Keyword.get(opts, :tool_state)
+
+    case resume_point(state, id) do
+      :fresh ->
+        ToolState.bind(tool_state(id, tool_opt))
+        {:ok, s}
+
+      {:halted, n} ->
+        ToolState.bind(tool_state(id, tool_opt))
+        {:ok, %{s | turns: n, status: {:halted, n}}}
+
+      {:resume, turn, snap} ->
+        ToolState.bind(resume_tool_state(id, tool_opt, snap))
+        send(self(), :turn)
+        {:ok, %{s | ctx: snap.ctx, turns: turn, status: :running, resumed: true}}
+    end
   end
 
-  defp tool_state(nil), do: ToolState
+  # A restart with events already in the store is a resume, not a fresh run.
+  defp resume_point(state, id) do
+    case state.events(id) do
+      [] ->
+        :fresh
 
-  defp tool_state(agent) when is_pid(agent) or is_atom(agent), do: agent
+      events ->
+        case List.last(events) do
+          %Event{action: :halt, result: {:halted, n}} ->
+            {:halted, n}
 
-  defp tool_state(%{} = snapshot) do
-    {:ok, pid} = ToolState.start_link(initial: snapshot)
-    pid
+          _ ->
+            turn = length(events)
+
+            case state.snapshot(id, turn) do
+              {:ok, snap} -> {:resume, turn, snap}
+              :error -> :fresh
+            end
+        end
+    end
   end
+
+  defp tool_state(_id, nil), do: ToolState
+  defp tool_state(_id, agent) when is_pid(agent) or is_atom(agent), do: agent
+
+  defp tool_state(id, %{} = snapshot) do
+    name = tool_state_name(id)
+
+    case DynamicSupervisor.start_child(
+           Tiller.ToolStates,
+           {ToolState, initial: snapshot, name: name}
+         ) do
+      {:ok, pid} -> pid
+      {:error, {:already_started, pid}} -> pid
+    end
+  end
+
+  # On resume a branch keeps its surviving world (side effects included);
+  # only if that is gone does it fall back to the snapshot.
+  defp resume_tool_state(id, %{} = _opt, snap) do
+    case GenServer.whereis(tool_state_name(id)) do
+      pid when is_pid(pid) -> pid
+      nil -> tool_state(id, snap.tool_state)
+    end
+  end
+
+  defp resume_tool_state(id, opt, _snap), do: tool_state(id, opt)
+
+  defp tool_state_name(id), do: {:via, Registry, {Tiller.Registry, {:tool_state, id}}}
 
   defp unique_id, do: "s" <> Integer.to_string(System.unique_integer([:positive]))
 
   @doc "Start the session (under a supervisor or standalone). Registers its id."
   def start_link(opts) do
     id = Keyword.get_lazy(opts, :id, &unique_id/0)
-    GenServer.start_link(__MODULE__, Keyword.put(opts, :id, id), name: via(id))
+    start_registered(Keyword.put(opts, :id, id), 50)
+  end
+
+  # After a kill the Registry may not have dropped the old entry yet when
+  # the supervisor restarts us; give it a few milliseconds.
+  defp start_registered(opts, tries) do
+    case GenServer.start_link(__MODULE__, opts, name: via(opts[:id])) do
+      {:error, {:already_started, pid}} = err when tries > 0 ->
+        if Process.alive?(pid) do
+          err
+        else
+          Process.sleep(2)
+          start_registered(opts, tries - 1)
+        end
+
+      other ->
+        other
+    end
   end
 
   @doc "Child spec for supervised sessions (used by spawn_subagent and fork)."
@@ -91,6 +176,15 @@ defmodule Tiller.Session do
   @spec whereis(id) :: pid | nil
   def whereis(id), do: GenServer.whereis(via(id))
 
+  @doc "The id of a running session's pid."
+  @spec id_of(pid) :: {:ok, id} | {:error, :noproc}
+  def id_of(pid) do
+    case Registry.keys(Tiller.Registry, pid) do
+      [id | _] -> {:ok, id}
+      [] -> {:error, :noproc}
+    end
+  end
+
   @doc "The id of the session the calling process is running in, if any."
   @spec current_id() :: id | nil
   def current_id, do: Process.get(:tiller_session_id)
@@ -100,15 +194,36 @@ defmodule Tiller.Session do
   def run(pid) when is_pid(pid), do: GenServer.cast(pid, :run)
   def run(id) when is_binary(id), do: GenServer.cast(via(id), :run)
 
-  @doc "Block until the session halts. Built on a halt notification, not a sleep."
-  @spec await(pid | id, timeout) :: {:halted, non_neg_integer} | {:error, :timeout}
+  @doc """
+  Block until the session halts. Built on the event store's subscription,
+  so it survives the session being killed and resumed under a new pid.
+  """
+  @spec await(pid | id, timeout) :: {:halted, non_neg_integer} | {:error, :timeout | :noproc}
   def await(pid_or_id, timeout \\ 5_000) do
-    try do
-      GenServer.call(target(pid_or_id), :await, timeout)
-    catch
-      :exit, {:timeout, _} -> {:error, :timeout}
+    with {:ok, id} <- resolve_id(pid_or_id) do
+      Tiller.State.subscribe(id)
+
+      result =
+        case List.last(Tiller.State.events(id)) do
+          %Event{action: :halt, result: {:halted, n}} ->
+            {:halted, n}
+
+          _ ->
+            receive do
+              {:tiller_event, %Event{session_id: ^id, action: :halt, result: {:halted, n}}} ->
+                {:halted, n}
+            after
+              timeout -> {:error, :timeout}
+            end
+        end
+
+      Tiller.State.unsubscribe(id)
+      result
     end
   end
+
+  defp resolve_id(id) when is_binary(id), do: {:ok, id}
+  defp resolve_id(pid) when is_pid(pid), do: id_of(pid)
 
   @doc "Id, ancestry, mutation, turn and status of a session."
   @spec info(pid | id) :: map
@@ -139,16 +254,14 @@ defmodule Tiller.Session do
   def handle_cast(:run, s), do: {:noreply, s}
 
   @impl true
-  def handle_call(:await, _from, %{status: {:halted, n}} = s), do: {:reply, {:halted, n}, s}
-  def handle_call(:await, from, s), do: {:noreply, %{s | waiters: [from | s.waiters]}}
-
   def handle_call(:info, _from, s) do
-    {:reply, Map.take(s, [:id, :parent_id, :mutation, :turns, :status, :latency]), s}
+    {:reply,
+     Map.take(s, [:id, :parent_id, :mutation, :turns, :status, :latency, :kill_at, :resumed]), s}
   end
 
   def handle_call({:fork, turn, mutation, opts}, _from, s) do
     with {:ok, mutation} <- validate_mutation(mutation),
-         {:ok, snapshot} <- Map.fetch(s.snapshots, turn) |> or_error({:no_snapshot, turn}),
+         {:ok, snapshot} <- s.state.snapshot(s.id, turn) |> or_error({:no_snapshot, turn}),
          {:ok, branch_opts} <- branch_opts(s, turn, mutation, snapshot, opts) do
       sup = Application.fetch_env!(:tiller, :supervisor)
 
@@ -202,19 +315,21 @@ defmodule Tiller.Session do
   defp plan({:result_override, at, _}, turn, _same),
     do: {:error, {:override_outside_prefix, at, turn}}
 
-  # Open Question 5: a supervisor restart is a duplicate, not a resume.
-  defp plan({:kill_at, _}, _turn, _same), do: {:error, {:unsupported, :kill_at}}
+  defp plan({:kill_at, at}, turn, same) when at >= turn, do: {:ok, same, [], kill_at: at}
+  defp plan({:kill_at, at}, turn, _same), do: {:error, {:kill_inside_prefix, at, turn}}
 
   @impl true
   def handle_info(:turn, %{status: :running} = s) do
-    s = snapshot(s)
+    snapshot(s)
 
     case s.driver.next_action(s.ctx) do
       :halt ->
         {:noreply, halt(s)}
 
       {:action, a, ctx} ->
-        record(s, a, Tiller.Actions.eval(a, s.whitelist), ctx)
+        result = Tiller.Actions.eval(a, s.whitelist)
+        maybe_die(s)
+        record(s, a, result, ctx)
 
       # Recorded prefix: the result is injected, the tool is not run.
       {:replay, a, result, ctx} ->
@@ -226,12 +341,16 @@ defmodule Tiller.Session do
   def handle_info({:subagent_halted, _pid, _n}, s), do: {:noreply, s}
   def handle_info(_other, s), do: {:noreply, s}
 
-  # What a fork at this turn needs: the driver context and the world as they
-  # were before this turn's action ran.
+  # What a fork or a resume at this turn needs: the driver context and the
+  # world as they were before this turn's action ran.
   defp snapshot(s) do
-    snap = %{ctx: s.ctx, tool_state: ToolState.snapshot()}
-    %{s | snapshots: Map.put(s.snapshots, s.turns, snap)}
+    s.state.snapshot(s.id, s.turns, %{ctx: s.ctx, tool_state: ToolState.snapshot()})
   end
+
+  # The kill mutation: the tool has run, the event has not been logged, and
+  # the process is gone. The supervisor's restart resumes at this turn.
+  defp maybe_die(%{kill_at: at, turns: at, resumed: false}), do: Process.exit(self(), :kill)
+  defp maybe_die(_s), do: :ok
 
   defp record(s, action, result, ctx) do
     {:ok, _event} = s.state.append(s.id, s.parent_id, s.turns, action, result)
@@ -245,7 +364,6 @@ defmodule Tiller.Session do
   defp halt(s) do
     {:ok, _event} = s.state.append(s.id, s.parent_id, s.turns, :halt, {:halted, s.turns})
     if s.parent, do: send(s.parent, {:subagent_halted, self(), s.turns})
-    for from <- s.waiters, do: GenServer.reply(from, {:halted, s.turns})
     %{s | status: {:halted, s.turns}, waiters: []}
   end
 end

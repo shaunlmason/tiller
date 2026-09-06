@@ -53,18 +53,19 @@ defmodule Tiller.Demo do
       nil,
       {:whitelist, List.delete(Actions.root_whitelist(), {:spend, 1})},
       {:result_override, 0, {:error, :disk_full}},
-      {:latency, 40}
+      {:latency, 40},
+      {:kill_at, fork_turn}
     ]
 
     IO.puts("\n=== fork at turn #{fork_turn}: #{length(mutations)} branches racing ===")
     branches = for m <- mutations, do: elem(Session.fork(pid, fork_turn, m), 1)
-    Enum.each(branches, &State.subscribe(Session.info(&1).id))
+    ids = Enum.map(branches, &elem(Session.id_of(&1), 1))
     started = System.monotonic_time(:millisecond)
     Enum.each(branches, &Session.run/1)
 
-    for b <- branches do
-      {:halted, _} = Session.await(b)
-      %{id: id, mutation: m} = Session.info(b)
+    for id <- ids do
+      {:halted, _} = Session.await(id)
+      %{mutation: m} = Session.info(id)
       ms = System.monotonic_time(:millisecond) - started
 
       verdict =
