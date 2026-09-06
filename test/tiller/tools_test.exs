@@ -11,9 +11,11 @@ defmodule Tiller.ToolsTest do
 
   defp run(actions) do
     State.clear()
-    {:ok, pid} = Session.start_link(driver: FakeDriver, ctx: FakeDriver.context(actions))
-    {:halted, _} = Session.run(pid)
-    State.log() |> Enum.reject(&match?({:halt, _}, &1)) |> Enum.map(&elem(&1, 1))
+    id = "t" <> Integer.to_string(System.unique_integer([:positive]))
+    {:ok, pid} = Session.start_link(driver: FakeDriver, ctx: FakeDriver.context(actions), id: id)
+    Session.run(pid)
+    {:halted, _} = Session.await(pid)
+    State.events(id) |> Enum.reject(&Tiller.Event.halt?/1) |> Enum.map(& &1.result)
   end
 
   test "put then get round-trips; get of a missing key refuses" do

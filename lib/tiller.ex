@@ -11,10 +11,11 @@ defmodule Tiller do
     children = [
       Tiller.State,
       Tiller.ToolState,
+      {Registry, keys: :unique, name: Tiller.Registry},
       %{
         id: Tiller.Supervisor,
-        start: {DynamicSupervisor, :start_link,
-                [[strategy: :one_for_one, name: Tiller.Supervisor]]}
+        start:
+          {DynamicSupervisor, :start_link, [[strategy: :one_for_one, name: Tiller.Supervisor]]}
       }
     ]
 

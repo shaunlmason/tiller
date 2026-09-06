@@ -110,21 +110,44 @@ defmodule Tiller.Tools do
   end
 
   @doc """
-  Spawn a subagent under Tiller's supervisor (crash-isolated), run it to
-  halt, and return its turn count. A crash is contained: the caller gets
-  {:subagent_failed, reason} and the supervisor reaps the process.
+  Spawn a subagent under Tiller's supervisor (crash-isolated) and start it.
+  Returns immediately with the child's session id; the child's trajectory
+  lands in `Tiller.State` under that id with this session as `parent_id`,
+  and the parent receives `{:subagent_halted, pid, turns}` when it halts.
+  A failure to start is contained: the caller gets {:subagent_failed, reason}.
   """
   def spawn_subagent(driver, ctx) do
     sup = Application.fetch_env!(:tiller, :supervisor)
+    parent_id = Tiller.Session.current_id()
+    child_id = child_id(parent_id)
 
-    case DynamicSupervisor.start_child(sup, Tiller.Session.child_spec(
-           driver: driver, ctx: ctx, whitelist: Tiller.Actions.sub_whitelist()
-         )) do
+    spec =
+      Tiller.Session.child_spec(
+        id: child_id,
+        parent_id: parent_id,
+        parent: self(),
+        driver: driver,
+        ctx: ctx,
+        whitelist: Tiller.Actions.sub_whitelist()
+      )
+
+    case DynamicSupervisor.start_child(sup, spec) do
       {:ok, pid} ->
         Tiller.Session.run(pid)
-        {:subagent_done, pid}
+        {:subagent_started, child_id}
 
-      {:error, reason} -> {:subagent_failed, reason}
+      {:error, reason} ->
+        {:subagent_failed, reason}
     end
+  end
+
+  # Deterministic child ids: "<parent>.<n>" for the nth child of a parent.
+  # Ids matter for divergence: a random id would make every spawn diverge.
+  defp child_id(nil), do: "s" <> Integer.to_string(System.unique_integer([:positive]))
+
+  defp child_id(parent_id) do
+    n = Process.get(:tiller_children, 0)
+    Process.put(:tiller_children, n + 1)
+    parent_id <> "." <> Integer.to_string(n)
   end
 end

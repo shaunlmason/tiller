@@ -27,17 +27,25 @@ us lisptc's three claims with no runtime to maintain:
 
 ```
 Tiller (DynamicSupervisor)
-├─ Tiller.State            ← shared action log (GenServer, plain list)
+├─ Tiller.State            ← ordered event store, attributed per session
 ├─ Tiller.ToolState        ← state behind side-effecting tools (kv, budget)
-├─ Session (root)          ← you drive; base tools + spawn_subagent
-│   └─ Session (subagent)  ← LLM/fake-driven; base tools only, no spawn
+├─ Tiller.Registry         ← sessions addressable by id
+├─ Session "root"          ← you drive; base tools + spawn_subagent
+│   └─ Session "root.0"    ← LLM/fake-driven; base tools only, no spawn
 └─ Session (other tasks)
 ```
 
-- **Session** (`Tiller.Session`): one GenServer per run. Loop: ask driver for
-  next action → evaluate against tool whitelist → append to `Tiller.State` →
-  repeat until `:halt`. Crashes are contained; a dead subagent hands its parent
-  a `{:subagent, pid, :crash}` value and nothing else dies.
+- **Session** (`Tiller.Session`): one GenServer per run. `run/1` casts; each
+  turn is one message to self: ask driver for next action → evaluate against
+  tool whitelist → append a `Tiller.Event` to `Tiller.State` → schedule the
+  next turn, until `:halt`. `await/2` blocks until halt. Crashes are
+  contained: a tool crash is data in the log, and a subagent runs under the
+  supervisor without blocking its parent.
+- **Event** (`Tiller.Event`): `{seq, session_id, parent_id, turn, action,
+  result}`. Subagent ids are deterministic (`"root.0"`), so trajectories
+  compare across runs. `Tiller.Divergence.first_diff/2` finds the first turn
+  where two of them disagree; `Tiller.Mutation` names the ways a forked
+  branch may differ.
 - **Driver** (`Tiller.Driver` behaviour): the only seam for "where the next
   action comes from". `Tiller.FakeDriver` scripts a list of actions for
   tests/demos. A real LLM driver (grammar-constrained decode → quoted term)
@@ -51,9 +59,12 @@ Tiller (DynamicSupervisor)
 - Actions are flat MFA terms, no macros/macros-as-prompts. Add when a real
   LLM driver needs composability the whitelist can't express.
 - `Tiller.State` is an in-memory list, not ETS/Ecto. Add persistence when
-  you need replay across restarts.
-- One loop = synchronous turn-taking; no concurrent tool calls per turn.
+  you need replay across restarts. Subscriptions are a pid map in the
+  GenServer; swap in `Phoenix.PubSub` when LiveView arrives.
+- One turn per message, no concurrent tool calls within a turn.
   Add `Task.async_stream` when a single turn needs fan-out.
+- `spawn_subagent` starts the child and returns; there is no `await` tool
+  yet, so a parent cannot use a subagent's result within its own run.
 - No real LLM driver yet. The FakeDriver is the contract.
 
 ## Research
@@ -82,8 +93,9 @@ Projects looked at while shaping tiller, with the verdict on each.
 
 ## Status
 
-Scaffold: Mix project, State, Actions, FakeDriver, Session, supervisor,
-test + demo. Run:
+Foundation for the butterfly lab in `docs/design.md`: attributed event store,
+async sessions, six tools, divergence, mutation vocabulary. Next: replay
+driver, fork, LiveView. Run:
 
 ```sh
 mix test
