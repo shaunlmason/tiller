@@ -29,7 +29,7 @@ defmodule TillerWeb.LabLive do
     {"override", "override turn 0 with {:ok, \"a different plan\"}"},
     {"driver", "driver swap: echo plan, echo skip the crash"},
     {"latency", "latency 300ms per live turn"},
-    {"kill", "kill at turn 2 (refused: open question 5)"}
+    {"kill", "kill the process before turn 2; the supervisor resumes it from its log"}
   ]
 
   defp mutation("control"), do: {:whitelist, Tiller.Actions.root_whitelist()}
@@ -120,6 +120,15 @@ defmodule TillerWeb.LabLive do
 
   defp halted?(evs), do: Enum.any?(evs, &match?(%Event{action: :halt}, &1))
 
+  # halted, running, or dead (no halt and no process: killed)
+  defp status(id, evs) do
+    cond do
+      halted?(evs) -> "halted"
+      Session.whereis(id) -> "running"
+      true -> "dead"
+    end
+  end
+
   # a branch's verdict against its parent from the events seen so far
   defp live_verdict(_events, _id, nil), do: nil
 
@@ -127,8 +136,15 @@ defmodule TillerWeb.LabLive do
     branch = events_of(events, id)
 
     case Divergence.first_diff(events_of(events, parent_id), branch) do
-      {:diverged, _, _, nil} = v -> if halted?(branch), do: v, else: :identical_so_far
-      v -> v
+      {:diverged, t, _, nil} = v ->
+        cond do
+          halted?(branch) -> v
+          Session.whereis(id) -> :identical_so_far
+          true -> {:killed, t}
+        end
+
+      v ->
+        v
     end
   end
 
@@ -155,15 +171,24 @@ defmodule TillerWeb.LabLive do
     end
   end
 
+  # the session's packet: live info when it runs, the stored packet when it does not
   defp meta(id) do
     case Session.whereis(id) do
-      nil -> %{}
+      nil -> State.get_session(id) || %{}
       pid -> Session.info(pid)
     end
   rescue
     _ -> %{}
   catch
     :exit, _ -> %{}
+  end
+
+  defp lineage_text(id) do
+    case meta(id) do
+      %{resumed_from: from} when not is_nil(from) -> "resumed from #{from}"
+      %{parent_id: p} when not is_nil(p) -> "forked from #{p}"
+      _ -> ""
+    end
   end
 
   defp kind(%Event{action: :halt}), do: "halt"
@@ -177,6 +202,7 @@ defmodule TillerWeb.LabLive do
   defp verdict_text(nil), do: ""
   defp verdict_text(:identical), do: "identical"
   defp verdict_text(:identical_so_far), do: "identical so far"
+  defp verdict_text({:killed, t}), do: "killed before turn #{t}"
   defp verdict_text({:diverged, t, l, r}), do: "diverged at turn #{t}: #{side(l)} vs #{side(r)}"
 
   defp side(nil), do: "(ended)"
@@ -186,6 +212,7 @@ defmodule TillerWeb.LabLive do
   defp verdict_class(:identical), do: "identical"
   defp verdict_class(:identical_so_far), do: "pending"
   defp verdict_class({:diverged, _, _, _}), do: "diverged"
+  defp verdict_class({:killed, _}), do: "error"
   defp verdict_class(_), do: "pending"
 
   ## render
@@ -197,7 +224,10 @@ defmodule TillerWeb.LabLive do
     race_branches =
       case assigns.race do
         %{parent: parent, started_seq: seq} ->
-          for {_id, parent_id, evs} = s <- sessions, parent_id == parent, hd(evs).seq > seq, do: s
+          for {id, parent_id, evs} <- sessions, parent_id == parent, hd(evs).seq > seq do
+            final = Session.final(id)
+            {id, final, if(final == id, do: evs, else: events_of(assigns.events, final))}
+          end
 
         nil ->
           []
@@ -225,8 +255,8 @@ defmodule TillerWeb.LabLive do
         <p :if={@sessions == []} class="kv">no sessions yet: run the demo root, then fork it on the right.</p>
         <div :for={{id, parent_id, evs} <- @sessions} class="session" id={"session-#{id}"}>
           <div class="name">
-            <span><b>{id}</b> <span :if={parent_id} class="meta">forked from {parent_id}</span></span>
-            <span class={if halted?(evs), do: "halted", else: "running"}>{if halted?(evs), do: "halted", else: "running"}</span>
+            <span><b>{id}</b> <span :if={parent_id} class="meta">{lineage_text(id)}</span></span>
+            <span class={status(id, evs)}>{status(id, evs)}</span>
           </div>
           <div :if={parent_id} class="meta">
             {case meta(id) do
@@ -298,17 +328,21 @@ defmodule TillerWeb.LabLive do
                 <%= if Map.has_key?(r, :error) do %>
                   <td></td><td class="verdict error">not run</td><td class="verdict error">{inspect(r.error)}</td>
                 <% else %>
-                  <td>{r.id}</td>
+                  <td>{Enum.join(r.lineage, " -> ")}</td>
                   <td>{inspect(r.outcome)}</td>
                   <td class={"verdict #{verdict_class(r.verdict)}"}>{verdict_text(r.verdict)}</td>
                 <% end %>
               </tr>
             <% else %>
-              <tr :for={{id, parent_id, evs} <- @race_branches}>
+              <tr :for={{id, final, evs} <- @race_branches}>
                 <td>{case meta(id) do %{mutation: m} when not is_nil(m) -> Mutation.label(m); _ -> "" end}</td>
-                <td>{id}</td>
-                <td class={if halted?(evs), do: "halted", else: "running"}>{if halted?(evs), do: "halted after #{length(evs) - 1}", else: "running (#{length(evs)})"}</td>
-                <td class={"verdict #{verdict_class(live_verdict(@events, id, parent_id))}"}>{verdict_text(live_verdict(@events, id, parent_id))}</td>
+                <td>{Enum.join(Session.lineage(id), " -> ")}</td>
+                <td class={status(final, evs)}>{case status(final, evs) do
+                  "halted" -> "halted after #{length(evs) - 1}"
+                  "running" -> "running (#{length(evs)})"
+                  "dead" -> "dead at #{length(evs)}"
+                end}</td>
+                <td class={"verdict #{verdict_class(live_verdict(@events, final, @race.parent))}"}>{verdict_text(live_verdict(@events, final, @race.parent))}</td>
               </tr>
             <% end %>
           </table>

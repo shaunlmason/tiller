@@ -434,7 +434,50 @@ LiveView, and have `Tiller.Divergence` report where each first
 diverged. Open question 4 (32 branches on one screen) is untouched: six
 presets fit; more would not.
 
-Next: step 10's remaining axis, `kill_at`, which is open question 5.
+## Step 10 (2026-09-06): `kill_at`, and open question 5 answered
+
+**Open question 5, decided: restart is resume, because the start
+arguments are an identity, not a state.** The question observed that
+`DynamicSupervisor`'s restart re-invokes the child's original
+`child_spec` start args, so a killed branch came back with its initial
+ctx and `turns: 0`: a duplicate, not a resume. The answer keeps the
+supervisor's behavior and changes what the start args mean. A session
+writes its *packet* to `Tiller.State` at start (origin driver and
+context, whitelist, latency, lineage); its events are the rest of the
+packet. When the supervisor restarts a killed session with the same
+args, `init/1` finds the packet already there and, instead of starting
+over, starts a new session `<id>/r<n>` forked from the dead one at the
+turn it died: the dead session's events replay through
+`Tiller.Driver.Replay`, the driver resumes with `resume_ctx/2`, and the
+dead packet records `resumed_by`. Nothing recorded is lost and nothing
+recorded is re-executed. The test asserts the strongest form: a branch
+killed before turn 2 comes back and its final trajectory is `:identical`
+to the parent's. A second kill of the resumed session resumes again
+from the latest log; the chain is `Session.lineage/1`.
+
+This is Seed's packet-resume drill ("a fresh executor completes a
+killed executor's work from the packet alone", SEED-NEXT.md) passed by
+construction in a hundred lines, which is the strongest evidence yet
+for option 3 in docs/designs/open-seed-integration.md.
+
+Mechanics: the `kill_at` axis sets `kill_at:` on the branch, whose
+`:turn` handler does `Process.exit(self(), :kill)` before executing that
+turn, the way a real executor dies (nothing recorded, nothing cleaned
+up). Kill branches are `restart: :transient`; other sessions stay
+`:temporary` so an ordinary crash is not silently resumed.
+`Tiller.Supervisor` runs with `max_restarts: 100` because the lab kills
+on purpose and the default valve (3 in 5 seconds) tripped on one race,
+taking every resumed session with it. `Session.await/2` now takes an id
+as well as a pid and follows the resume chain; `Lab.race/4` reports
+`lineage`. On the page a killed session shows as `dead` with "killed
+before turn N", and its resume as "resumed from <id>".
+
+The `kill_at` turn must be at or after the fork turn
+(`{:kill_before_fork, t, turn}` otherwise).
+
+**All five mutation axes are live.** Remaining open questions: 3
+(ranking incommensurable mutations) and 4 (32 branches on one screen),
+both stretch and both untouched.
 
 ## What I noticed about how you think
 

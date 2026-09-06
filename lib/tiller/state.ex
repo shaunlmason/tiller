@@ -70,13 +70,26 @@ defmodule Tiller.State do
   defp topic(id) when is_binary(id), do: "tiller:session:" <> id
   defp topic(id), do: "tiller:session:" <> inspect(id)
 
+  @doc """
+  Store a session's packet: what a resume needs besides its events
+  (origin driver and context, whitelist, latency, lineage). Written by
+  `Tiller.Session` at start; `resumed_by` is set when a killed session
+  comes back.
+  """
+  def put_session(id, packet), do: GenServer.call(__MODULE__, {:put_session, id, packet})
+
+  def update_session(id, fun), do: GenServer.call(__MODULE__, {:update_session, id, fun})
+
+  @doc "A session's packet, or nil."
+  def get_session(id), do: GenServer.call(__MODULE__, {:get_session, id})
+
   @doc "Reset (tests)."
   def clear, do: GenServer.call(__MODULE__, :clear)
 
   ## Server
 
   @impl true
-  def init(_), do: {:ok, %{seq: 0, events: []}}
+  def init(_), do: {:ok, %{seq: 0, events: [], sessions: %{}}}
 
   @impl true
   def handle_call({:append, sid, pid, turn, action, result, origin}, _from, s) do
@@ -91,7 +104,19 @@ defmodule Tiller.State do
   end
 
   def handle_call(:all, _from, s), do: {:reply, Enum.reverse(s.events), s}
-  def handle_call(:clear, _from, _s), do: {:reply, :ok, %{seq: 0, events: []}}
+  def handle_call(:clear, _from, _s), do: {:reply, :ok, %{seq: 0, events: [], sessions: %{}}}
+
+  def handle_call({:put_session, id, packet}, _from, s),
+    do: {:reply, :ok, %{s | sessions: Map.put(s.sessions, id, packet)}}
+
+  def handle_call({:update_session, id, fun}, _from, s) do
+    case Map.fetch(s.sessions, id) do
+      {:ok, packet} -> {:reply, :ok, %{s | sessions: Map.put(s.sessions, id, fun.(packet))}}
+      :error -> {:reply, {:error, :unknown_session}, s}
+    end
+  end
+
+  def handle_call({:get_session, id}, _from, s), do: {:reply, Map.get(s.sessions, id), s}
 
   defp publish(ev) do
     for key <- [ev.session_id, :all] do

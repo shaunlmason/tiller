@@ -54,10 +54,15 @@ Tiller (DynamicSupervisor)
   land live with their first divergence ringed.
 - **Fork and race** (`Tiller.Session.fork/4`, `Tiller.Lab.race/4`): fork a
   session at any turn under one mutation (`whitelist`, `driver`,
-  `result_override`, `latency`), re-live the prefix through
+  `result_override`, `latency`, `kill_at`), re-live the prefix through
   `Tiller.Driver.Replay` with recorded results injected and nothing
   re-executed, then run live. `race/4` forks N branches, runs them
   concurrently, and reports each one's first divergence from the parent.
+- **Restart is resume**: a session's packet (driver, initial context,
+  whitelist, lineage) lives in `Tiller.State` beside its events. When the
+  supervisor restarts a killed session, `init/1` finds the packet and comes
+  back as a new session forked from the dead one at the turn it died.
+  A branch killed mid-run finishes identical to its parent.
 - **Driver** (`Tiller.Driver` behaviour): the only seam for "where the next
   action comes from". `Tiller.FakeDriver` scripts a list of actions for
   tests/demos. A real LLM driver (grammar-constrained decode → quoted term)
@@ -85,10 +90,12 @@ Tiller (DynamicSupervisor)
   `Task.async_stream` when a single turn needs fan-out. Sessions themselves
   run concurrently.
 - No real LLM driver yet. The FakeDriver is the contract. A real one
-  implements `next_action/1` and, to be forkable, `resume_ctx/2`.
-- The `kill_at` mutation is refused: a supervisor restart replays the
-  child's initial arguments, which is a duplicate branch, not a resume
-  (design open question 5).
+  implements `next_action/1` and, to be forkable or resumable,
+  `resume_ctx/2`.
+- Only `kill_at` branches are resumed after a crash (`restart:
+  :transient`); every other session is `:temporary`, so an ordinary
+  crash stays a crash. Flip the child spec when you want the packet
+  resume everywhere.
 
 ## Research
 

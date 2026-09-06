@@ -22,8 +22,11 @@ defmodule Tiller do
         Tiller.Session.registry_spec(),
         %{
           id: Tiller.Supervisor,
+          # the lab kills sessions on purpose (the kill_at axis) and relies on
+          # the restart to resume them, so the crash-loop valve is set wide:
+          # the default 3 restarts in 5 seconds would trip on one race
           start: {DynamicSupervisor, :start_link,
-                  [[strategy: :one_for_one, name: Tiller.Supervisor]]}
+                  [[strategy: :one_for_one, name: Tiller.Supervisor, max_restarts: 100, max_seconds: 5]]}
         },
         TillerWeb.Endpoint
       ] ++ seed_child(Application.get_env(:tiller, :seed))

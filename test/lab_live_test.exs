@@ -65,7 +65,9 @@ defmodule TillerWeb.LabLiveTest do
     assert html =~ "override@0"
     assert html =~ "diverged at turn 0"
     assert html =~ "kill@2"
-    assert html =~ "not run"
+    assert html =~ ~r/root-\d+\/f1-\d+ -&gt; root-\d+\/f1-\d+\/r\d+/
+    assert html =~ "resumed from"
+    assert html =~ ">dead<"
     # the branches are on the timeline, attributed to the root
     assert html =~ "forked from #{root_id}"
     # the first divergence is marked on a chip

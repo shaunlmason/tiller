@@ -15,7 +15,8 @@ defmodule Tiller.Lab do
           mutation: Mutation.t(),
           pid: pid,
           id: term,
-          outcome: {:halted, non_neg_integer} | {:error, :timeout},
+          lineage: [term],
+          outcome: {:halted, non_neg_integer} | {:error, :timeout | :dead},
           verdict: Divergence.verdict()
         }
 
@@ -29,35 +30,37 @@ defmodule Tiller.Lab do
   @spec race(pid, non_neg_integer, [Mutation.t()], keyword) :: [branch | %{mutation: Mutation.t(), error: term}]
   def race(pid, turn, mutations, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, 5_000)
-    %{id: parent_id, state: state} = Session.info(pid)
+    %{id: parent_id} = Session.info(pid)
 
     started =
       Enum.map(mutations, fn m ->
-        case Session.fork(pid, turn, m, Keyword.take(opts, [:state])) do
-          {:ok, bpid} -> {m, bpid}
-          {:error, reason} -> {m, {:error, reason}}
+        case Session.fork(pid, turn, m) do
+          {:ok, bpid} -> {m, bpid, Session.id(bpid)}
+          {:error, reason} -> {m, {:error, reason}, nil}
         end
       end)
 
     # start every branch before awaiting any: they race
-    for {_m, bpid} <- started, is_pid(bpid), do: :ok = Session.run(bpid)
+    for {_m, bpid, _} <- started, is_pid(bpid), do: :ok = Session.run(bpid)
 
-    parent_events = state.events(parent_id)
+    parent_events = Tiller.State.events(parent_id)
 
     Enum.map(started, fn
-      {m, {:error, reason}} ->
+      {m, {:error, reason}, _} ->
         %{mutation: m, error: reason}
 
-      {m, bpid} ->
-        outcome = Session.await(bpid, timeout)
-        id = Session.id(bpid)
+      {m, bpid, id} ->
+        # await by id: a killed branch's pid dies, its resume carries on
+        outcome = Session.await(id, timeout)
+        final = Session.final(id)
 
         %{
           mutation: m,
           pid: bpid,
-          id: id,
+          id: final,
+          lineage: Session.lineage(id),
           outcome: outcome,
-          verdict: Divergence.first_diff(parent_events, state.events(id), Keyword.take(opts, [:key]))
+          verdict: Divergence.first_diff(parent_events, Tiller.State.events(final), Keyword.take(opts, [:key]))
         }
     end)
   end
@@ -78,8 +81,8 @@ defmodule Tiller.Lab do
       %{mutation: m, error: reason} ->
         "  #{Mutation.label(m)}: not run (#{inspect(reason)})"
 
-      %{mutation: m, id: id, outcome: outcome, verdict: verdict} ->
-        "  #{Mutation.label(m)} [#{id}] #{inspect(outcome)}: #{describe(verdict)}"
+      %{mutation: m, lineage: lineage, outcome: outcome, verdict: verdict} ->
+        "  #{Mutation.label(m)} [#{Enum.join(lineage, " -> ")}] #{inspect(outcome)}: #{describe(verdict)}"
     end)
   end
 

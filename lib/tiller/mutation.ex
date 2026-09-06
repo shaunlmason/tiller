@@ -4,11 +4,11 @@ defmodule Tiller.Mutation do
   (docs/designs/agent-butterfly-lab.md, Types). `Tiller.Session.fork/4`
   applies one; `Tiller.Lab.race/4` applies many at once and compares.
 
-  Four axes are live: `whitelist` and `driver` were already session
+  All five axes are live: `whitelist` and `driver` were already session
   options, `result_override` rides on the replay driver, `latency` is a
-  delay before each live turn. `kill_at` waits on open question 5: a
-  supervisor restart replays the child's *initial* arguments, which is a
-  duplicate branch, not a resume.
+  delay before each live turn, and `kill_at` kills the branch process
+  before a turn and lets the supervisor bring it back resumed from its
+  own log (`Tiller.Session`, "Restart is resume").
   """
 
   @type t ::
@@ -18,10 +18,9 @@ defmodule Tiller.Mutation do
           | {:latency, milliseconds :: pos_integer}
           | {:kill_at, turn :: non_neg_integer}
 
-  @doc "Which axes `Tiller.Session.fork/4` can apply today."
+  @doc "Which axes `Tiller.Session.fork/4` can apply."
   @spec supported?(t) :: boolean
-  def supported?({:kill_at, _}), do: false
-  def supported?(m) when is_tuple(m), do: elem(m, 0) in [:whitelist, :driver, :result_override, :latency]
+  def supported?(m) when is_tuple(m), do: elem(m, 0) in [:whitelist, :driver, :result_override, :latency, :kill_at]
 
   @doc "A short label for reports."
   def label({:whitelist, wl}) do
@@ -39,4 +38,5 @@ defmodule Tiller.Mutation do
   def label({:result_override, t, r}), do: "override@#{t}=#{inspect(r, limit: 5)}"
   def label({:latency, ms}), do: "latency=#{ms}ms"
   def label({:kill_at, t}), do: "kill@#{t}"
+  def label({:resumed, t}), do: "resumed@#{t}"
 end

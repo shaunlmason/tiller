@@ -105,12 +105,68 @@ defmodule Tiller.LabTest do
     assert %{latency: 40, fork_turn: 1, mutation: {:latency, 40}} = Map.take(Session.info(b), [:latency, :fork_turn, :mutation])
   end
 
-  test "kill_at is refused until open question 5 is answered; turns beyond the log too" do
+  test "kill_at: the branch dies before the turn and the supervisor brings it back resumed" do
+    pid = root([act(:echo, ["plan"]), act(:fail), act(:echo, ["recover"]), act(:echo, ["done"])])
+    {:ok, b} = Session.fork(pid, 1, {:kill_at, 2}, id: "b")
+    :ok = Session.run(b)
+
+    # await follows the resume chain and reports the final session's turns
+    assert {:halted, 4} = Session.await("b")
+    refute Process.alive?(b)
+    assert Session.whereis("b") == nil
+
+    # the dead session recorded turns 0 (replayed) and 1 (live), then nothing: no halt
+    assert [%Event{turn: 0, origin: :replay}, %Event{turn: 1, origin: :live, action: {:call, _, :fail, []}}] = State.events("b")
+
+    # its packet names the successor, and the successor is a fork of it at the death turn
+    assert %{resumed_by: r} = State.get_session("b")
+    assert String.starts_with?(r, "b/r")
+    assert [^r] = Session.lineage("b") -- ["b"]
+    assert %{parent_id: "b", resumed_from: "b", fork_turn: 2, mutation: {:resumed, 2}} = Session.info(Session.whereis(r))
+
+    assert [
+             %Event{session_id: ^r, parent_id: "b", turn: 0, origin: :replay},
+             %Event{turn: 1, origin: :replay, action: {:call, _, :fail, []}},
+             %Event{turn: 2, origin: :live, action: {:call, _, :echo, ["recover"]}},
+             %Event{turn: 3, origin: :live, action: {:call, _, :echo, ["done"]}},
+             %Event{action: :halt, result: {:halted, 4}}
+           ] = State.events(r)
+
+    # nothing recorded was lost or re-executed: the resumed trajectory equals the parent's
+    assert :identical = Tiller.Divergence.first_diff(State.events("root"), State.events(r))
+  end
+
+  test "kill before the fork turn and turns beyond the log are refused" do
     pid = root([act(:echo, [1])])
-    assert {:error, {:unsupported, :kill_at}} = Session.fork(pid, 1, {:kill_at, 0})
+    assert {:error, {:kill_before_fork, 0, 1}} = Session.fork(pid, 1, {:kill_at, 0})
     assert {:error, {:turn_beyond_log, 5, 1}} = Session.fork(pid, 5, {:latency, 1})
-    refute Mutation.supported?({:kill_at, 0})
+    assert Mutation.supported?({:kill_at, 1})
     assert Mutation.supported?({:latency, 1})
+  end
+
+  test "a resumed session under a second kill resumes again from the latest log" do
+    # kill the resumed session too: the chain grows and the final trajectory is still whole
+    pid = root([act(:echo, [1]), act(:echo, [2]), act(:echo, [3]), act(:echo, [4])])
+    {:ok, b} = Session.fork(pid, 0, {:kill_at, 1}, id: "k")
+    :ok = Session.run(b)
+    {:halted, 4} = Session.await("k")
+    [r1] = Session.lineage("k") -- ["k"]
+
+    # a second, external kill while the resumed session is halted: transient restarts it
+    Process.exit(Session.whereis(r1), :kill)
+    eventually(fn -> length(Session.lineage("k")) == 3 end)
+    [^r1, r2] = Session.lineage("k") -- ["k"]
+    assert {:halted, 4} = Session.await("k")
+    assert Enum.all?(State.events(r2), &(&1.origin == :replay or &1.action == :halt))
+    assert :identical = Tiller.Divergence.first_diff(State.events("root"), State.events(r2))
+  end
+
+  defp eventually(fun, tries \\ 100) do
+    cond do
+      fun.() -> :ok
+      tries == 0 -> flunk("condition never held")
+      true -> Process.sleep(10) && eventually(fun, tries - 1)
+    end
   end
 
   test "race forks N branches at one turn, runs them concurrently, and reports each" do
@@ -132,15 +188,17 @@ defmodule Tiller.LabTest do
              %{mutation: {:result_override, 0, _}, verdict: {:diverged, 0, _, _}},
              %{mutation: {:driver, FakeDriver, _}, verdict: {:diverged, 1, _, %Event{action: {:call, _, :echo, ["skip the crash"]}}}, outcome: {:halted, 2}},
              %{mutation: {:latency, 5}, verdict: :identical},
-             %{mutation: {:kill_at, 2}, error: {:unsupported, :kill_at}}
+             %{mutation: {:kill_at, 2}, verdict: :identical, outcome: {:halted, 4}, lineage: [killed, resumed]}
            ] = results
 
-    # every branch is attributed to the parent and shares its replayed prefix
-    for %{id: id} <- results do
-      assert [%Event{parent_id: "root", turn: 0, origin: :replay} | _] = State.events(id)
+    assert String.starts_with?(resumed, killed <> "/r")
+
+    # every branch's first session is attributed to the parent and shares its replayed prefix
+    for %{lineage: [first | _]} <- results do
+      assert [%Event{parent_id: "root", turn: 0, origin: :replay} | _] = State.events(first)
     end
 
     assert Lab.format(results) =~ "diverged at turn 1: fail/0"
-    assert Lab.format(results) =~ "kill@2: not run"
+    assert Lab.format(results) =~ "kill@2 [#{killed} -> #{resumed}] {:halted, 4}: identical"
   end
 end
