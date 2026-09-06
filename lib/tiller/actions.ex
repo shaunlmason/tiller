@@ -5,16 +5,21 @@ defmodule Tiller.Actions do
   whitelist and never get `spawn_subagent` (depth limit).
   """
 
-  @root_tools [
+  # Tools every session gets. Each has an observable side effect or a
+  # distinct failure mode, so mutating one branch's whitelist or result
+  # changes what later turns can do.
+  @base_tools [
     {:echo, 1},
     {:fail, 0},
-    {:spawn_subagent, 2}
+    {:put, 2},
+    {:get, 1},
+    {:spend, 1},
+    {:flaky, 1},
+    {:sleep, 1}
   ]
 
-  @sub_tools [
-    {:echo, 1},
-    {:fail, 0}
-  ]
+  @root_tools @base_tools ++ [{:spawn_subagent, 2}]
+  @sub_tools @base_tools
 
   def root_whitelist, do: @root_tools
   def sub_whitelist, do: @sub_tools
@@ -22,11 +27,18 @@ defmodule Tiller.Actions do
   @doc """
   Evaluate a quoted MFA action `{:call, m, f, args}` against a whitelist.
   Returns {:ok, result} | {:error, reason} — never raises.
+
+  A tool may fail two ways and both land in the log as `{:error, _}`: it
+  returns `{:error, reason}` (a refusal, e.g. `:not_found`) or it crashes
+  (a raise/throw/exit, captured with its stacktrace).
   """
   def eval({:call, _m, f, args}, whitelist) do
     if Enum.member?(whitelist, {f, length(args)}) do
       try do
-        {:ok, apply(Tiller.Tools, f, args)}
+        case apply(Tiller.Tools, f, args) do
+          {:error, reason} -> {:error, reason}
+          value -> {:ok, value}
+        end
       catch
         kind, reason -> {:error, {kind, reason, __STACKTRACE__}}
       end
@@ -39,10 +51,63 @@ defmodule Tiller.Actions do
 end
 
 defmodule Tiller.Tools do
-  @moduledoc "The actual tools. Add feed-domain tools here as they exist."
+  @moduledoc """
+  The actual tools.
+
+  Failure modes are deliberately distinct so a counterfactual has something
+  to bite on:
+
+    * `echo/1`  no side effect, never fails
+    * `fail/0`  always crashes
+    * `put/2`, `get/1`  a key-value store; `get` of a missing key refuses
+    * `spend/1` a depleting budget; overspending refuses without depleting
+    * `flaky/1` crashes on every third call, stateful across the run
+    * `sleep/1` succeeds slowly, so branches finish at different times
+  """
+
+  alias Tiller.ToolState
+
+  @sleep_cap_ms 1_000
 
   def echo(value), do: "echo: #{inspect(value)}"
   def fail(), do: raise("simulated tool crash")
+
+  @doc "Store a value. Later turns can `get` it."
+  def put(key, value) do
+    ToolState.put(key, value)
+    {:put, key}
+  end
+
+  @doc "Read a stored value, or refuse with `{:error, :not_found}`."
+  def get(key) do
+    case ToolState.fetch(key) do
+      {:ok, value} -> value
+      :error -> {:error, :not_found}
+    end
+  end
+
+  @doc "Spend from a fixed budget. Returns the remainder or `{:error, :budget_exceeded}`."
+  def spend(n) do
+    case ToolState.spend(n) do
+      {:ok, remaining} -> {:remaining, remaining}
+      {:error, _} = e -> e
+    end
+  end
+
+  @doc "Returns `value`, except every third call across the run raises."
+  def flaky(value) do
+    case ToolState.flaky_tick() do
+      {n, true} -> raise "flaky: call #{n} failed"
+      {_n, false} -> value
+    end
+  end
+
+  @doc "Sleep for `ms` (capped at #{@sleep_cap_ms}) and return how long it slept."
+  def sleep(ms) when is_integer(ms) and ms >= 0 do
+    slept = min(ms, @sleep_cap_ms)
+    Process.sleep(slept)
+    {:slept, slept}
+  end
 
   @doc """
   Spawn a subagent under Tiller's supervisor (crash-isolated), run it to

@@ -10,6 +10,7 @@ defmodule Tiller do
   def start(_type, _args) do
     children = [
       Tiller.State,
+      Tiller.ToolState,
       %{
         id: Tiller.Supervisor,
         start: {DynamicSupervisor, :start_link,

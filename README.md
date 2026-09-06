@@ -28,8 +28,9 @@ us lisptc's three claims with no runtime to maintain:
 ```
 Tiller (DynamicSupervisor)
 ├─ Tiller.State            ← shared action log (GenServer, plain list)
-├─ Session (root)          ← you drive; tools: echo, spawn_subagent
-│   └─ Session (subagent)  ← LLM/fake-driven; smaller whitelist, no spawn
+├─ Tiller.ToolState        ← state behind side-effecting tools (kv, budget)
+├─ Session (root)          ← you drive; base tools + spawn_subagent
+│   └─ Session (subagent)  ← LLM/fake-driven; base tools only, no spawn
 └─ Session (other tasks)
 ```
 

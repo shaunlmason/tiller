@@ -5,6 +5,7 @@ defmodule TillerTest do
 
   setup do
     State.clear()
+    Tiller.ToolState.reset()
     :ok
   end
 
