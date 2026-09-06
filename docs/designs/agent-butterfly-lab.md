@@ -502,6 +502,26 @@ available as a `key:`-style option if someone needs a total order.
 Remaining: open question 4 (32 branches on one screen), stretch,
 untouched.
 
+## Beyond the design (2026-09-06): a real driver
+
+The constraint "no real LLM driver; FakeDriver stays the contract" held
+through the whole lab and was the right call: every mechanism was proven
+on deterministic scripts first. `Tiller.Driver.Claude` now plugs into
+the same seam with one addition to the protocol, an optional
+`observe/2` callback. The gap it closes: `next_action/1` never saw the
+result of the previous action, which a script does not need and a model
+cannot do without. The session now folds each recorded event through
+`observe/2`; `Tiller.Driver.resume/3` falls back to folding the
+replayed events through it, so `resume_ctx/2` is only needed by drivers
+that cannot be rebuilt one event at a time.
+
+The driver keeps the grammar as the boundary: tools are the whitelist,
+one `args` array each, and a name the model invents still becomes a
+quoted term the whitelist refuses as data. Text without a tool call is
+the model's last word, recorded as a `note` event. Refusals, HTTP
+errors, and transport errors are notes too, never crashes. Verified
+against a scripted transport; the live test is gated on a key.
+
 ## What I noticed about how you think
 
 - You wrote "Deliberate limits (upgrade paths)" as a first-class README section

@@ -12,30 +12,43 @@ defmodule Tiller.Driver do
   this today; it is how a forked branch re-lives its parent's prefix
   without executing side effects twice.
 
+  `observe/2` is optional: after the session records a turn's event, the
+  driver may fold it into its context. A scripted driver ignores results;
+  a model-backed one needs every tool result fed back, and this is where.
+
   `resume_ctx/2` is optional (butterfly lab, open question 2). When a
   replayed prefix runs out, the replay driver hands off to a delegate and
   needs that delegate's context *as of the fork turn*. Driver contexts are
   opaque, so only the driver can rebuild one: given its initial context
   and the events that were replayed, return the context to continue from.
-  A driver that does not implement it is handed its context exactly as
-  supplied at fork time, so the caller must position it themselves.
+  Without it, a driver with `observe/2` is resumed by folding the replayed
+  events through it; a driver with neither is handed its context exactly
+  as supplied at fork time, so the caller must position it themselves.
   """
 
   @type action :: {:call, module, atom, [term]}
   @type reply :: {:action, action, ctx :: term} | {:replay, action, term, ctx :: term} | :halt
 
   @callback next_action(ctx :: term()) :: reply
+  @callback observe(ctx :: term(), Tiller.Event.t()) :: term()
   @callback resume_ctx(initial_ctx :: term(), replayed :: [Tiller.Event.t()]) :: term()
-  @optional_callbacks resume_ctx: 2
+  @optional_callbacks observe: 2, resume_ctx: 2
 
   @doc "Build a quoted action term: the grammar is the capability boundary."
   def action(f, args \\ []), do: {:call, Tiller.Tools, f, args}
 
-  @doc "The delegate's context as of the fork turn: `resume_ctx/2` if it has one, else as supplied."
+  @doc "Fold one recorded event into the driver's context, if it observes."
+  def observe(driver, ctx, event) do
+    if function_exported?(driver, :observe, 2), do: driver.observe(ctx, event), else: ctx
+  end
+
+  @doc "The delegate's context as of the fork turn: `resume_ctx/2`, else observed, else as supplied."
   def resume(driver, initial_ctx, replayed) do
-    if function_exported?(driver, :resume_ctx, 2),
-      do: driver.resume_ctx(initial_ctx, replayed),
-      else: initial_ctx
+    cond do
+      function_exported?(driver, :resume_ctx, 2) -> driver.resume_ctx(initial_ctx, replayed)
+      function_exported?(driver, :observe, 2) -> Enum.reduce(replayed, initial_ctx, &driver.observe(&2, &1))
+      true -> initial_ctx
+    end
   end
 end
 
@@ -120,4 +133,12 @@ defmodule Tiller.Driver.Replay do
       {:replay, a, r, dctx} -> {:replay, a, r, %{ctx | delegate_ctx: dctx}}
     end
   end
+
+  # replayed turns reach the delegate through resume/3 at hand-off; live
+  # turns after it are the delegate's to observe
+  @impl true
+  def observe(%{resumed: true} = ctx, event),
+    do: %{ctx | delegate_ctx: Tiller.Driver.observe(ctx.delegate, ctx.delegate_ctx, event)}
+
+  def observe(ctx, _event), do: ctx
 end

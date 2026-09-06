@@ -72,6 +72,24 @@ defmodule TillerWeb.LabLive do
     {:noreply, assign(socket, root: id, race: nil)}
   end
 
+  def handle_event("run-claude", %{"goal" => goal}, socket) do
+    cond do
+      String.trim(goal) == "" ->
+        {:noreply, put_flash(socket, :error, "give the model a goal")}
+
+      (System.get_env("ANTHROPIC_API_KEY") || "") == "" ->
+        {:noreply, put_flash(socket, :error, "ANTHROPIC_API_KEY is not set; the driver has nothing to call")}
+
+      true ->
+        id = "claude-#{System.unique_integer([:positive, :monotonic])}"
+        ctx = Tiller.Driver.Claude.context(goal)
+        spec = Session.child_spec(driver: Tiller.Driver.Claude, ctx: ctx, id: id)
+        {:ok, pid} = DynamicSupervisor.start_child(Tiller.Supervisor, spec)
+        :ok = Session.run(pid)
+        {:noreply, assign(socket, root: id, race: nil)}
+    end
+  end
+
   def handle_event("clear", _params, socket) do
     Lab.reset()
     {:noreply, assign(socket, events: [], selected: nil, root: nil, race: nil)}
@@ -249,6 +267,10 @@ defmodule TillerWeb.LabLive do
     <header>
       <h1>tiller butterfly lab</h1>
       <button phx-click="run-demo">run demo root</button>
+      <form phx-submit="run-claude" style="display:inline-flex;gap:6px;align-items:center;margin:0">
+        <input type="text" name="goal" placeholder="a goal for Claude" style="width:22em;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:4px;padding:3px 6px;font:inherit" />
+        <button type="submit">run claude root</button>
+      </form>
       <button phx-click="clear">clear</button>
       <span class="legend">
         <span style="background:var(--ok)"></span>ok

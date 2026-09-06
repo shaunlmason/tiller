@@ -86,6 +86,20 @@ defmodule Tiller.Demo do
     print_log("butterfly")
   end
 
+  @doc """
+  A Claude-driven root session for `goal`, then the event log. Needs
+  `ANTHROPIC_API_KEY`. Fork it afterwards from the lab or with
+  `Tiller.Lab.race/4` like any other session.
+  """
+  def claude(goal, opts \\ []) do
+    Tiller.State.clear()
+    ctx = Tiller.Driver.Claude.context(goal, opts)
+    {:ok, pid} = Tiller.Session.start_link(driver: Tiller.Driver.Claude, ctx: ctx, id: "claude")
+    {:halted, n} = Tiller.Session.run_to_halt(pid, 600_000)
+    IO.puts("claude halted after #{n} turns")
+    print_log("claude")
+  end
+
   defp print_log(title) do
     IO.puts("=== #{title}: event log (seq session/turn) ===")
 

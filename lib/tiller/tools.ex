@@ -15,6 +15,26 @@ defmodule Tiller.Tools do
   def echo(value), do: "echo: #{inspect(value)}"
   def fail(), do: raise("simulated tool crash")
 
+  @doc "Record something as data with no effect: a model's final text, a driver's error. Returns :ok."
+  def note(_term), do: :ok
+
+  @doc "One-line descriptions, offered to a model as tool descriptions."
+  def description({:echo, 1}), do: "Echo one value back. args: [value]"
+  def description({:fail, 0}), do: "Crash on purpose (a test tool). args: []"
+  def description({:note, 1}), do: "Record a remark as data; no effect. args: [text]"
+  def description({:spawn_subagent, 2}), do: "Not callable by a model: takes a driver module and context."
+  def description({:seed_ready, 0}), do: "List the open-seed cards this actor may claim. args: []"
+  def description({:seed_get, 1}), do: "Fetch one open-seed card. args: [task_id]"
+  def description({:seed_claim, 1}), do: "Claim a ready card; the envelope carries claim_token. args: [task_id]"
+  def description({:seed_claim, 2}), do: "Claim with a lease such as \"45m\". args: [task_id, lease]"
+  def description({:seed_lease_renew, 2}), do: "Extend a live claim. args: [task_id, claim_token]"
+  def description({:seed_release, 2}), do: "Give a claim back without closing. args: [task_id, claim_token]"
+  def description({:seed_transition, 3}), do: "Move a card, e.g. to \"review\". args: [task_id, to_state, claim_token]"
+  def description({:seed_transition, 4}), do: "Move a card to blocked with a reason (plan:<pr> | dep:<id> | manual:<op>). args: [task_id, \"blocked\", claim_token, blocked_on]"
+  def description({:seed_attach_evidence, 4}), do: "Append evidence. args: [task_id, kind (log|commit|pr|file), ref, claim_token]"
+  def description({:seed_comment, 3}), do: "Append a comment to a card. args: [task_id, body, claim_token]"
+  def description({f, a}), do: "tiller tool #{f}/#{a}"
+
   @doc """
   Spawn a subagent under Tiller's supervisor (crash-isolated) and start
   it. Returns `{:subagent_started, pid, session_id}` at once: the parent

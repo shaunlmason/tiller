@@ -66,9 +66,17 @@ Tiller (DynamicSupervisor)
   back as a new session forked from the dead one at the turn it died.
   A branch killed mid-run finishes identical to its parent.
 - **Driver** (`Tiller.Driver` behaviour): the only seam for "where the next
-  action comes from". `Tiller.FakeDriver` scripts a list of actions for
-  tests/demos. A real LLM driver (grammar-constrained decode → quoted term)
-  plugs in here with no other changes.
+  action comes from". `next_action/1` returns the next quoted term;
+  `observe/2` (optional) folds each recorded result back into the
+  driver's context; `resume_ctx/2` (optional) positions a driver at a
+  fork or resume point. `Tiller.FakeDriver` scripts a list of actions for
+  tests and demos. `Tiller.Driver.Claude` is the real one: the whitelist
+  is offered as tools, a `tool_use` block becomes the quoted term, a reply
+  with no tool call becomes a `note` event and the session halts. Raw HTTP
+  over `:httpc`, `ANTHROPIC_API_KEY` from the environment, the server-side
+  refusal fallback on by default. A Claude-driven session forks and
+  resumes like a scripted one, because `resume_ctx/2` rebuilds the
+  conversation from the replayed events.
 - **Actions** (`Tiller.Actions`): the registry. The grammar *is* the
   capability boundary — an agent can only touch what's in its whitelist.
   Subagents get a smaller whitelist and can't spawn (depth limit).
@@ -91,9 +99,11 @@ Tiller (DynamicSupervisor)
 - One turn per message; no concurrent tool calls within a turn. Add
   `Task.async_stream` when a single turn needs fan-out. Sessions themselves
   run concurrently.
-- No real LLM driver yet. The FakeDriver is the contract. A real one
-  implements `next_action/1` and, to be forkable or resumable,
-  `resume_ctx/2`.
+- `Tiller.Driver.Claude` is tested against a scripted transport; the live
+  test (`mix test --include live`) needs a key and has not run in CI. Two
+  things to watch on first live use: a resumed conversation carries
+  synthesised assistant turns without thinking blocks, and every tool
+  takes one `args` array rather than named parameters.
 - Only `kill_at` branches are resumed after a crash (`restart:
   :transient`); every other session is `:temporary`, so an ordinary
   crash stays a crash. Flip the child spec when you want the packet
@@ -151,6 +161,7 @@ mix test
 mix run -e 'Tiller.Demo.run()'          # root + subagent, a contained crash
 mix run -e 'Tiller.Demo.butterfly()'    # one run forked five ways at turn 1, raced, compared
 mix phx.server                          # the lab: http://localhost:4000
+ANTHROPIC_API_KEY=... mix run -e 'Tiller.Demo.claude("Call echo with \"ping\", then stop.")'
 ```
 
 The lab in action, forked at turn 1 under five mutations: the timeline on

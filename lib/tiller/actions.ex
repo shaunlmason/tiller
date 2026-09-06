@@ -31,12 +31,14 @@ defmodule Tiller.Actions do
   @root_tools [
     {:echo, 1},
     {:fail, 0},
+    {:note, 1},
     {:spawn_subagent, 2}
   ] ++ @seed_read ++ @seed_worker
 
   @sub_tools [
     {:echo, 1},
-    {:fail, 0}
+    {:fail, 0},
+    {:note, 1}
   ] ++ @seed_read
 
   def root_whitelist, do: @root_tools

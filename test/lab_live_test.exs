@@ -81,6 +81,12 @@ defmodule TillerWeb.LabLiveTest do
     assert html =~ "diverge"
   end
 
+  test "running a Claude root without a key is a flash, not a crash" do
+    {:ok, view, _} = live(build_conn(), "/")
+    html = render_submit(view, "run-claude", %{"goal" => "do something"})
+    assert html =~ "ANTHROPIC_API_KEY is not set" or html =~ "claude-"
+  end
+
   test "racing with no root is a flash, not a crash" do
     {:ok, view, _} = live(build_conn(), "/")
     html = view |> form("#race-form", %{"turn" => "1", "mutations" => ["control"]}) |> render_submit()

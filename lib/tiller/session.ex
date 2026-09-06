@@ -389,15 +389,15 @@ defmodule Tiller.Session do
 
       {:action, a, ctx} ->
         result = Tiller.Actions.eval(a, s.whitelist)
-        State.append(s.id, s.parent_id, s.turns, a, result)
+        {:ok, ev} = State.append(s.id, s.parent_id, s.turns, a, result)
         schedule_turn(s)
-        {:noreply, %{s | ctx: ctx, turns: s.turns + 1}}
+        {:noreply, %{s | ctx: Tiller.Driver.observe(s.driver, ctx, ev), turns: s.turns + 1}}
 
       {:replay, a, result, ctx} ->
         # the driver already knows the answer: record it, run nothing
-        State.append(s.id, s.parent_id, s.turns, a, result, :replay)
+        {:ok, ev} = State.append(s.id, s.parent_id, s.turns, a, result, :replay)
         send(self(), :turn)
-        {:noreply, %{s | ctx: ctx, turns: s.turns + 1}}
+        {:noreply, %{s | ctx: Tiller.Driver.observe(s.driver, ctx, ev), turns: s.turns + 1}}
     end
   end
 
