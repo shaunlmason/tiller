@@ -15,7 +15,9 @@ defmodule Tiller.MixProject do
   def application do
     [
       mod: {Tiller, []},
-      extra_applications: [:logger]
+      # :inets and :ssl are Tiller.Driver.LLM's HTTP client: it speaks the
+      # Messages API over :httpc rather than taking an SDK dependency.
+      extra_applications: [:logger, :inets, :ssl]
     ]
   end
 

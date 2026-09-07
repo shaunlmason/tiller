@@ -15,7 +15,8 @@ defmodule Tiller.Actions do
     {:get, 1},
     {:spend, 1},
     {:flaky, 1},
-    {:sleep, 1}
+    {:sleep, 1},
+    {:done, 1}
   ]
 
   # open-seed port verbs (`Tiller.Seed`). The split mirrors the port's own

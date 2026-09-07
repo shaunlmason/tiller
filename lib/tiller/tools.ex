@@ -12,6 +12,8 @@ defmodule Tiller.Tools do
     * `spend/1` a depleting budget; overspending refuses without depleting
     * `flaky/1` crashes on every third call, stateful across the run
     * `sleep/1` succeeds slowly, so branches finish at different times
+    * `done/1`  ends a run by recording its answer, so the answer is an
+      action two trajectories can be compared on
     * `seed_*` talk to the open-seed engine through `Tiller.Seed`; a
       refused verb is `{:refused, envelope}`, a result, not a crash, so
       the log records exactly which exit class the port returned (2
@@ -25,6 +27,15 @@ defmodule Tiller.Tools do
 
   def echo(value), do: "echo: #{inspect(value)}"
   def fail(), do: raise("simulated tool crash")
+
+  @doc """
+  Finish the run: record the final answer as an action.
+
+  A driver that has nothing left to do calls this, so `Tiller.Race`
+  compares runs on where they ended rather than on the last incidental
+  tool call. The session halts on the turn after.
+  """
+  def done(summary), do: {:done, summary}
 
   @doc "Store a value. Later turns can `get` it."
   def put(key, value) do
