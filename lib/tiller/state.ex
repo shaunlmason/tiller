@@ -33,18 +33,24 @@ defmodule Tiller.State do
     GenServer.start_link(__MODULE__, [], Keyword.put(opts, :name, __MODULE__))
   end
 
-  @impl true
-  def init(_) do
-    path =
-      Application.get_env(:tiller, :state_log) ||
-        case System.get_env("TILLER_STATE_LOG") do
-          nil -> nil
-          "" -> nil
-          v -> v
-        end
+  @doc """
+  The log path this store would start with: `TILLER_STATE_LOG` when it is
+  set, else `config :tiller, :state_log`, else none.
 
-    {:ok, load(path)}
+  The environment wins so a configured default (dev writes one) can be
+  redirected, or turned off with an empty value, without editing config.
+  """
+  @spec configured_log_path() :: Path.t() | nil
+  def configured_log_path do
+    case System.get_env("TILLER_STATE_LOG") do
+      nil -> Application.get_env(:tiller, :state_log)
+      "" -> nil
+      path -> path
+    end
   end
+
+  @impl true
+  def init(_), do: {:ok, load(configured_log_path())}
 
   defp initial(path \\ nil, log \\ nil) do
     %{
@@ -75,8 +81,10 @@ defmodule Tiller.State do
     %{s | log: Tiller.State.Log.open(path)}
   end
 
-  defp record(%{log: nil}, _frame), do: :ok
-  defp record(%{log: io}, frame), do: Tiller.State.Log.append(io, frame)
+  defp record(s, frame), do: record_all(s, [frame])
+
+  defp record_all(%{log: nil}, _frames), do: :ok
+  defp record_all(%{log: io}, frames), do: Tiller.State.Log.append_all(io, frames)
 
   defp put_snapshot(s, id, turn, snap) do
     update_in(
@@ -85,12 +93,32 @@ defmodule Tiller.State do
     )
   end
 
-  @doc "Append an attributed event. Returns the stored event with its `seq`."
-  @spec append(binary, binary | nil, non_neg_integer, Event.action() | :halt, Event.result()) ::
-          {:ok, Event.t()}
-  def append(session_id, parent_id, turn, action, result) do
-    GenServer.call(__MODULE__, {:append, session_id, parent_id, turn, action, result})
+  @doc """
+  Append an attributed event. Returns the stored event with its `seq`.
+
+  `next_snapshot` parks the following turn's starting point in the same
+  write. The two belong together: an event durable without the snapshot
+  that follows it leaves a run with no point to resume from, so a crash
+  between them must not be possible.
+  """
+  @spec append(
+          binary,
+          binary | nil,
+          non_neg_integer,
+          Event.action() | :halt,
+          Event.result(),
+          map | nil
+        ) :: {:ok, Event.t()}
+  def append(session_id, parent_id, turn, action, result, next_snapshot \\ nil) do
+    GenServer.call(
+      __MODULE__,
+      {:append, session_id, parent_id, turn, action, result, next_snapshot}
+    )
   end
+
+  @doc "Every session the store knows, from its events or its profile."
+  @spec sessions() :: [binary]
+  def sessions, do: GenServer.call(__MODULE__, :sessions)
 
   @doc "All events, oldest first."
   @spec events() :: [Event.t()]
@@ -156,7 +184,7 @@ defmodule Tiller.State do
   def clear, do: GenServer.call(__MODULE__, :clear)
 
   @impl true
-  def handle_call({:append, session_id, parent_id, turn, action, result}, _from, s) do
+  def handle_call({:append, session_id, parent_id, turn, action, result, next_snapshot}, _from, s) do
     seq = s.seq + 1
 
     event = %Event{
@@ -172,7 +200,18 @@ defmodule Tiller.State do
       send(pid, {:tiller_event, event})
     end
 
-    record(s, {:event, event})
+    s =
+      case next_snapshot do
+        nil ->
+          record(s, {:event, event})
+          s
+
+        snap ->
+          # one write, so a crash cannot land between them
+          record_all(s, [{:event, event}, {:snapshot, session_id, turn + 1, snap}])
+          put_snapshot(s, session_id, turn + 1, snap)
+      end
+
     {:reply, {:ok, event}, %{s | seq: seq, events: [event | s.events]}}
   end
 
@@ -226,6 +265,11 @@ defmodule Tiller.State do
   end
 
   def handle_call(:log_path, _from, s), do: {:reply, s.path, s}
+
+  def handle_call(:sessions, _from, s) do
+    from_events = s.events |> Enum.map(& &1.session_id) |> Enum.uniq()
+    {:reply, Enum.uniq(from_events ++ Map.keys(s.profiles)), s}
+  end
 
   def handle_call(:clear, _from, s) do
     for {_key, pids} <- s.subs, pid <- pids, do: send(pid, {:tiller_reset})

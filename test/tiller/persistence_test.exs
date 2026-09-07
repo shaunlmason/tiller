@@ -6,7 +6,7 @@ defmodule Tiller.PersistenceTest do
   """
   use ExUnit.Case, async: false
 
-  alias Tiller.{Divergence, Driver, Event, FakeDriver, Session, State}
+  alias Tiller.{Divergence, Driver, Event, FakeDriver, Session, State, ToolState}
 
   setup do
     Tiller.reset()
@@ -152,6 +152,110 @@ defmodule Tiller.PersistenceTest do
     running = record("live", [Driver.action(:sleep, [200])], latency: 200)
     assert {:error, :alive} = Session.resume("live")
     Process.exit(running, :kill)
+  end
+
+  test "a resumed run keeps the world it had, not a fresh one", %{path: path} do
+    pid =
+      record(
+        "world",
+        [
+          Driver.action(:put, [:k, "kept"]),
+          Driver.action(:spend, [4]),
+          Driver.action(:get, [:k])
+        ],
+        latency: 300
+      )
+
+    kill_mid_run(pid, "world")
+    Tiller.reset_processes()
+    # a real VM restart loses the global tool state too, which is what
+    # makes the snapshot the only copy of this run's world
+    ToolState.reset()
+    State.reopen(path)
+
+    Tiller.resume_dead()
+    assert {:halted, 3} = Session.await("world", 10_000)
+
+    read_back =
+      Enum.find_value(State.events("world"), fn
+        %Event{action: {:call, _m, :get, _}, result: r} -> r
+        _ -> nil
+      end)
+
+    assert {:ok, "kept"} = read_back
+  end
+
+  test "frames written after a torn tail are still readable", %{path: path} do
+    {:ok, _} = State.append("t", nil, 0, Driver.action(:echo, [1]), {:ok, 1})
+    # what a crash mid-write leaves behind
+    File.write!(path, <<0, 0, 0, 99, "torn">>, [:append])
+
+    State.reopen(path)
+    {:ok, _} = State.append("t", nil, 1, Driver.action(:echo, [2]), {:ok, 2})
+
+    State.reopen(path)
+    assert length(State.events("t")) == 2
+  end
+
+  test "a run killed before its first action is still a run to pick up", %{path: path} do
+    pid = record("early", [Driver.action(:sleep, [400])], latency: 400)
+    wait_until(fn -> match?({:ok, _}, State.snapshot("early", 0)) end)
+    assert State.events("early") == []
+
+    Process.exit(pid, :kill)
+    wait_until(fn -> not Process.alive?(pid) end)
+    wait_until(fn -> is_pid(Session.whereis("early")) end)
+    Tiller.reset_processes()
+    State.reopen(path)
+
+    # nothing was recorded, but the profile and snapshot say what to
+    # start again
+    assert "early" in Tiller.dead()
+  end
+
+  test "an event is never durable without the snapshot that follows it", %{path: path} do
+    pid = record("paired")
+    assert {:halted, 3} = Session.await(pid)
+    State.reopen(path)
+
+    # every recorded turn has somewhere to resume from
+    for turn <- 0..3 do
+      assert {:ok, _snap} = State.snapshot("paired", turn)
+    end
+  end
+
+  test "TILLER_STATE_LOG wins over config, and empty turns the log off" do
+    Application.put_env(:tiller, :state_log, "/tmp/from-config.log")
+    env_path = Path.join(System.tmp_dir!(), "from-env-#{System.unique_integer([:positive])}.log")
+    System.put_env("TILLER_STATE_LOG", env_path)
+
+    on_exit(fn ->
+      System.delete_env("TILLER_STATE_LOG")
+      Application.delete_env(:tiller, :state_log)
+      File.rm(env_path)
+    end)
+
+    assert State.configured_log_path() == env_path
+
+    System.put_env("TILLER_STATE_LOG", "")
+    assert State.configured_log_path() == nil
+  end
+
+  test "resume refuses when the store has no point to resume from" do
+    {:ok, _} = State.append("headless", nil, 0, Driver.action(:echo, [1]), {:ok, 1})
+
+    State.put_profile("headless", %{
+      driver: FakeDriver,
+      parent_id: nil,
+      whitelist: [],
+      latency: 0,
+      kill_at: nil,
+      mutation: nil
+    })
+
+    # an event with no snapshot after it: better to say so than to start a
+    # session that would sit idle forever
+    assert {:error, :no_resume_point} = Session.resume("headless")
   end
 
   test "clear empties the log too, so a restart after it starts blank", %{path: path} do

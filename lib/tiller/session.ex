@@ -268,10 +268,11 @@ defmodule Tiller.Session do
   snapshot taken before the turn that was in flight, so nothing recorded
   is lost and the turn that never finished runs again.
 
-  Refused for a session that is already running, that has halted, or
-  that the store has no profile for.
+  Refused for a session that is already running, that has halted, that
+  the store has no profile for, or that has no snapshot at the turn it
+  stopped on.
   """
-  @spec resume(id) :: {:ok, pid} | {:error, :alive | :halted | :unknown}
+  @spec resume(id) :: {:ok, pid} | {:error, :alive | :halted | :unknown | :no_resume_point}
   def resume(id) do
     cond do
       halted?(id) ->
@@ -289,20 +290,35 @@ defmodule Tiller.Session do
   end
 
   defp start_from(id, profile) do
-    opts = [
-      id: id,
-      # init reads the context back from the snapshot; there is no live
-      # one to hand it.
-      ctx: nil,
-      driver: profile.driver,
-      parent_id: profile.parent_id,
-      whitelist: profile.whitelist,
-      latency: profile.latency,
-      kill_at: profile.kill_at,
-      mutation: profile.mutation
-    ]
+    turn = length(Tiller.State.events(id))
 
-    DynamicSupervisor.start_child(Application.fetch_env!(:tiller, :supervisor), child_spec(opts))
+    case Tiller.State.snapshot(id, turn) do
+      :error ->
+        {:error, :no_resume_point}
+
+      {:ok, snap} ->
+        opts = [
+          id: id,
+          # init reads the context back from the snapshot; there is no
+          # live one to hand it.
+          ctx: nil,
+          driver: profile.driver,
+          parent_id: profile.parent_id,
+          whitelist: profile.whitelist,
+          latency: profile.latency,
+          kill_at: profile.kill_at,
+          mutation: profile.mutation,
+          # The world as this run left it. A supervisor restart finds the
+          # global tool state still holding the run's effects; a VM
+          # restart does not, so the snapshot is the only copy.
+          tool_state: snap.tool_state
+        ]
+
+        DynamicSupervisor.start_child(
+          Application.fetch_env!(:tiller, :supervisor),
+          child_spec(opts)
+        )
+    end
   end
 
   defp halted?(id) do
@@ -441,13 +457,19 @@ defmodule Tiller.Session do
   defp maybe_die(_s), do: :ok
 
   defp record(s, action, result, ctx) do
-    {:ok, _event} = s.state.append(s.id, s.parent_id, s.turns, action, result)
     s = %{s | ctx: ctx, turns: s.turns + 1}
-    # The next turn's starting point, parked as soon as it is known. The
-    # turn handler parks it again with the same values; what this adds is
-    # cover for a process that dies in the gap between turns, which is
-    # where a VM restart usually catches one.
-    snapshot(s)
+
+    # The event and the next turn's starting point go in together. Parking
+    # the snapshot covers a process that dies in the gap between turns,
+    # which is where a VM restart usually catches one; writing it with the
+    # event means a crash cannot leave the event durable with no point to
+    # resume from. The turn handler parks it again with the same values.
+    {:ok, _event} =
+      s.state.append(s.id, s.parent_id, s.turns - 1, action, result, %{
+        ctx: ctx,
+        tool_state: ToolState.snapshot()
+      })
+
     schedule_turn(s)
     {:noreply, s}
   end

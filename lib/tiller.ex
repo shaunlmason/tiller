@@ -20,9 +20,9 @@ defmodule Tiller do
   """
   @spec dead() :: [binary]
   def dead do
-    Tiller.State.events()
-    |> Enum.map(& &1.session_id)
-    |> Enum.uniq()
+    # From profiles as well as events: a run killed before its first
+    # action recorded nothing but is still a run to pick up.
+    Tiller.State.sessions()
     |> Enum.filter(&(Tiller.Session.whereis(&1) == nil))
     |> Enum.reject(&halted?/1)
   end
