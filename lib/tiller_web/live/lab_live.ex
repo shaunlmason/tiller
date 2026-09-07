@@ -10,7 +10,7 @@ defmodule TillerWeb.LabLive do
   """
   use Phoenix.LiveView
 
-  alias Tiller.{Actions, Divergence, Event, FakeDriver, Race, Session, State}
+  alias Tiller.{Actions, Divergence, Event, FakeDriver, Mutation, Race, Session, State}
 
   @root "root"
 
@@ -64,20 +64,33 @@ defmodule TillerWeb.LabLive do
 
   def handle_event("fork", _params, %{assigns: %{selected: turn}} = socket)
       when is_integer(turn) do
+    {:noreply, race(socket, turn, presets(turn))}
+  end
+
+  def handle_event("fork", _params, socket), do: {:noreply, socket}
+
+  # Every mutation this run reaches, rather than the hand-picked few.
+  def handle_event("sweep", _params, %{assigns: %{selected: turn}} = socket)
+      when is_integer(turn) do
+    mutations =
+      Mutation.sweep(root_events(socket.assigns.events), Actions.root_whitelist(), turn)
+
+    {:noreply, race(socket, turn, mutations)}
+  end
+
+  def handle_event("sweep", _params, socket), do: {:noreply, socket}
+
+  defp race(socket, turn, mutations) do
     branches =
-      for m <- presets(turn), {:ok, pid} <- [Session.fork(@root, turn, m)] do
+      for m <- mutations, {:ok, pid} <- [Session.fork(@root, turn, m)] do
         {:ok, id} = Session.id_of(pid)
         %{id: id, mutation: m, events: [], verdict: nil, ms: nil}
       end
 
     started = System.monotonic_time(:millisecond)
     Enum.each(branches, &Session.run(&1.id))
-
-    {:noreply,
-     assign(socket, branches: socket.assigns.branches ++ branches, race_started: started)}
+    assign(socket, branches: socket.assigns.branches ++ branches, race_started: started)
   end
-
-  def handle_event("fork", _params, socket), do: {:noreply, socket}
 
   @impl true
   def handle_info({:tiller_event, %Event{} = e}, socket) do
@@ -192,6 +205,13 @@ defmodule TillerWeb.LabLive do
       <button phx-click="record">Record run</button>
       <button phx-click="fork" disabled={is_nil(@selected) or @total == 0}>
         Fork at {if @selected, do: "turn #{@selected}", else: "…"}
+      </button>
+      <button
+        phx-click="sweep"
+        disabled={is_nil(@selected) or @total == 0}
+        title="One branch per tool this run still uses, per replayed turn, per turn it could die at, plus latency; capped and spread across axes"
+      >
+        Sweep
       </button>
       <button phx-click="reset">Reset</button>
       <span class="tag">
