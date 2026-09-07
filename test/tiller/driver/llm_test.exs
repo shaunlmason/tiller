@@ -206,6 +206,40 @@ defmodule Tiller.Driver.LLMTest do
     assert message =~ "no tools offered"
   end
 
+  test "forking a branch again with an override reaches the model, not just the log" do
+    # A branch's driver is Replay, so this fork aims override/3 at Replay
+    # rather than at the driver underneath it.
+    script = fn request ->
+      case FakeMessages.last_result(request) do
+        nil -> FakeMessages.tool_use("spend", %{"amount" => 4})
+        result -> FakeMessages.done("saw #{result}")
+      end
+    end
+
+    api = start_api(script)
+    {pid, _events} = run(api, "Spend four.", id: "orig", max_turns: 3)
+
+    {:ok, branch} = Session.fork(pid, 1, nil)
+    {:ok, branch_id} = Session.id_of(branch)
+    Session.run(branch)
+    {:halted, _} = Session.await(branch_id, 15_000)
+
+    {:ok, rebranch} = Session.fork(branch, 1, {:result_override, 0, {:error, :budget_exceeded}})
+    {:ok, rebranch_id} = Session.id_of(rebranch)
+    Session.run(rebranch)
+    {:halted, _} = Session.await(rebranch_id, 15_000)
+
+    summary =
+      State.events(rebranch_id)
+      |> Enum.find_value(fn
+        %Event{action: {:call, _m, :done, [s]}} -> s
+        _ -> nil
+      end)
+
+    assert summary =~ "budget_exceeded",
+           "the model answered from a history that never happened: #{inspect(summary)}"
+  end
+
   describe "override/3" do
     test "rewrites the remembered result and strips thinking after it" do
       ctx = %{

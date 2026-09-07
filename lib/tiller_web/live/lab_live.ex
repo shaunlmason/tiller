@@ -124,6 +124,8 @@ defmodule TillerWeb.LabLive do
   defp result_class({:ok, _}), do: "ok"
   defp result_class({:error, _}), do: "err"
   defp result_class({:halted, _}), do: "halt"
+  # a run that refused, ran out of turns, or lost the API ends this way
+  defp result_class({:halted, _, _}), do: "halt"
 
   defp result_text(r), do: inspect(r, limit: 6, printable_limit: 60)
 

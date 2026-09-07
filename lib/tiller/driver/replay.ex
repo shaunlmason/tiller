@@ -94,4 +94,20 @@ defmodule Tiller.Driver.Replay do
   end
 
   def observe(ctx, _action, _result), do: ctx
+
+  @doc """
+  A result override reaches the delegate through here.
+
+  A branch's driver is this module, so forking a branch again aims the
+  fork's `override/3` at Replay rather than at the driver underneath.
+  Without forwarding, the replayed event would carry the new result while
+  the delegate (a conversation, say) still remembered the old one, and
+  the model would choose its next action from a history that never
+  happened. Nested branches recurse, since a delegate may itself be a
+  Replay.
+  """
+  @impl true
+  def override(ctx, turn, result) do
+    %{ctx | delegate_ctx: Tiller.Driver.override(ctx.delegate, ctx.delegate_ctx, turn, result)}
+  end
 end

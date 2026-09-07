@@ -20,7 +20,19 @@ defmodule Tiller.Driver.LLM.Wire do
           {:tool_use, String.t(), Tiller.Event.action()}
           | {:text, String.t()}
           | {:refusal, term}
-          | {:stop, atom}
+          | {:stop, atom | String.t()}
+
+  # Every stop reason the API documents. Anything outside it stays a
+  # binary: see `unknown_tool/2` for why nothing here interns an atom.
+  @stop_reasons %{
+    "end_turn" => :end_turn,
+    "max_tokens" => :max_tokens,
+    "model_context_window_exceeded" => :model_context_window_exceeded,
+    "pause_turn" => :pause_turn,
+    "refusal" => :refusal,
+    "stop_sequence" => :stop_sequence,
+    "tool_use" => :tool_use
+  }
 
   @doc """
   One tool definition per whitelisted entry that has a schema, sorted by
@@ -82,7 +94,7 @@ defmodule Tiller.Driver.LLM.Wire do
             {:text, text(content)}
 
           other ->
-            {:stop, String.to_atom(other)}
+            {:stop, Map.get(@stop_reasons, other, other)}
         end
     end
   end
@@ -118,24 +130,26 @@ defmodule Tiller.Driver.LLM.Wire do
   defp render({:error, r}), do: inspect(r, limit: 50, printable_limit: 4_000)
   defp render(other), do: inspect(other, limit: 50, printable_limit: 4_000)
 
-  # A name the model invented still becomes an action; the whitelist
-  # refuses it at eval and the refusal is data in the log, which is the
-  # same path a removed tool takes.
+  # A name the model invented still becomes an action, so the refusal is
+  # data in the log exactly as a removed tool's is. What it must never do
+  # is reach String.to_atom/1: atoms are never collected, so a model that
+  # keeps inventing names would grow the table until the node dies. Names
+  # resolve through the schema table, which is the set the request
+  # offered, and anything else becomes `unknown_tool` carrying the name
+  # it claimed as data.
   defp action(name, input) do
-    f = String.to_atom(name)
-    {:call, Tiller.Tools, f, args_for(f, input)}
-  end
-
-  defp args_for(f, input) when is_map(input) do
-    case Enum.find(Schema.callable(), fn {n, _a} -> n == f end) do
-      nil ->
-        Map.values(input)
-
-      fa ->
-        {:ok, params} = Schema.params(fa)
-        Enum.map(params, fn {p, _t} -> Map.get(input, to_string(p)) end)
+    case Enum.find(Schema.callable(), fn {f, _a} -> Atom.to_string(f) == name end) do
+      nil -> unknown_tool(name, input)
+      {f, _a} = fa -> {:call, Tiller.Tools, f, args_for(fa, input)}
     end
   end
 
-  defp args_for(_f, _input), do: []
+  defp unknown_tool(name, input), do: {:call, Tiller.Tools, :unknown_tool, [name, input]}
+
+  defp args_for(fa, input) when is_map(input) do
+    {:ok, params} = Schema.params(fa)
+    Enum.map(params, fn {p, _t} -> Map.get(input, to_string(p)) end)
+  end
+
+  defp args_for(_fa, _input), do: []
 end

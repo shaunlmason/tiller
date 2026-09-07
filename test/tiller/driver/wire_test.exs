@@ -94,7 +94,7 @@ defmodule Tiller.Driver.LLM.WireTest do
       assert {:stop, :max_tokens} = Wire.decode(%{"stop_reason" => "max_tokens", "content" => []})
     end
 
-    test "a tool name the model invented is still an action, for the whitelist to refuse" do
+    test "a tool name the model invented is an action carrying the name, for the whitelist to refuse" do
       body = %{
         "stop_reason" => "tool_use",
         "content" => [
@@ -102,7 +102,43 @@ defmodule Tiller.Driver.LLM.WireTest do
         ]
       }
 
-      assert {:tool_use, "t", {:call, Tools, :rm_rf, ["/"]}} = Wire.decode(body)
+      assert {:tool_use, "t", {:call, Tools, :unknown_tool, ["rm_rf", %{"path" => "/"}]}} =
+               Wire.decode(body)
+
+      # nothing in Tiller.Tools answers to that, so the session refuses it
+      assert {:error, :not_whitelisted} =
+               Tiller.Actions.eval(
+                 {:call, Tools, :unknown_tool, ["rm_rf", %{}]},
+                 Tiller.Actions.root_whitelist()
+               )
+    end
+
+    test "model output never interns an atom" do
+      # Atoms are never collected, so a model that keeps inventing names
+      # would grow the table until the node dies.
+      before = :erlang.system_info(:atom_count)
+
+      for i <- 1..50 do
+        unique = "#{i}-#{System.unique_integer([:positive])}"
+
+        Wire.decode(%{
+          "stop_reason" => "tool_use",
+          "content" => [
+            %{"type" => "tool_use", "id" => "t", "name" => "invented_#{unique}", "input" => %{}}
+          ]
+        })
+
+        Wire.decode(%{"stop_reason" => "unheard_of_#{unique}", "content" => []})
+      end
+
+      assert :erlang.system_info(:atom_count) == before
+    end
+
+    test "a documented stop reason is an atom; an unknown one stays a string" do
+      assert {:stop, :max_tokens} = Wire.decode(%{"stop_reason" => "max_tokens", "content" => []})
+
+      assert {:stop, "from_the_future"} =
+               Wire.decode(%{"stop_reason" => "from_the_future", "content" => []})
     end
   end
 
