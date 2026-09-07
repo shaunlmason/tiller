@@ -115,23 +115,24 @@ defmodule Tiller.Driver.LLM.WireTest do
 
     test "model output never interns an atom" do
       # Atoms are never collected, so a model that keeps inventing names
-      # would grow the table until the node dies.
-      before = :erlang.system_info(:atom_count)
-
+      # would grow the table until the node dies. Asserted per name rather
+      # than against :erlang.system_info(:atom_count): that counter is
+      # VM-global, so every other test running alongside this one moves it.
       for i <- 1..50 do
-        unique = "#{i}-#{System.unique_integer([:positive])}"
+        tool = "invented_tool_#{i}_#{System.unique_integer([:positive])}"
+        reason = "unheard_of_reason_#{i}_#{System.unique_integer([:positive])}"
 
         Wire.decode(%{
           "stop_reason" => "tool_use",
-          "content" => [
-            %{"type" => "tool_use", "id" => "t", "name" => "invented_#{unique}", "input" => %{}}
-          ]
+          "content" => [%{"type" => "tool_use", "id" => "t", "name" => tool, "input" => %{}}]
         })
 
-        Wire.decode(%{"stop_reason" => "unheard_of_#{unique}", "content" => []})
-      end
+        Wire.decode(%{"stop_reason" => reason, "content" => []})
 
-      assert :erlang.system_info(:atom_count) == before
+        # the only proof that matters: decoding did not create these
+        assert_raise ArgumentError, fn -> String.to_existing_atom(tool) end
+        assert_raise ArgumentError, fn -> String.to_existing_atom(reason) end
+      end
     end
 
     test "a documented stop reason is an atom; an unknown one stays a string" do
