@@ -54,6 +54,11 @@ defmodule TillerWeb.Layouts do
           table.grid td.cell.missing { background: #1c1f25; }
           table.grid td.cell:hover { outline: 1px solid #d7dae0; }
           table.grid td.verdict { padding-left: 8px; white-space: nowrap; }
+          p.band { margin: 0 0 10px; font-size: 12px; color: #a8b0bd; }
+          p.band strong { color: #ffb454; }
+          table.grid tr.control td.bid { color: #6b7280; }
+          table.grid tr.in-band td.bid { color: #a8b0bd; }
+          table.grid tr.in-band td.verdict { opacity: .6; }
         </style>
       </head>
       <body>

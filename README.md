@@ -56,6 +56,12 @@ Tiller (DynamicSupervisor)
   is *decisive* if the branch ends somewhere else; the smallest decisive one
   is the one whose trajectory differs in the fewest turns. Measured on the
   log, so axes never need comparing.
+- **Control band** (`Tiller.Race.noise_floor/2`): with a model deciding each
+  turn, everything after the fork point is a fresh sample, so two branches
+  that changed nothing can still diverge. A race carries several control
+  branches; how far *they* drift is the floor, and only a mutation whose
+  effect clears it is *beyond noise* and earns the star. Scripted drivers
+  keep the floor at zero, where beyond-noise means what decisive used to.
 - **Kill** (`kill_at`): the branch runs the tool at turn N and dies before
   logging it; the supervisor restart resumes it at N (snapshots live in
   `Tiller.State`, branch tool state under `Tiller.ToolStates`) and runs the
@@ -69,7 +75,8 @@ Tiller (DynamicSupervisor)
 - **Lab** (`TillerWeb.LabLive`): three panes. Timeline of the recorded run
   on the left (click a turn to pick the fork point), that turn across every
   branch in the middle, and on the right a branch-by-turn grid ranked by
-  `Tiller.Race` with the smallest decisive mutation starred. Fed entirely by
+  `Tiller.Race`, the control band it measured, and the smallest mutation
+  past that band starred. Fed entirely by
   `Tiller.State.subscribe/1`; nothing polls.
   Phoenix is the only reason the project is no longer dependency-free, and
   it stays out of `lib/tiller`.
