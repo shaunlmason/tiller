@@ -80,6 +80,36 @@ defmodule TillerWeb.LabLiveTest do
     assert has_element?(view, "#grid tr.smallest")
   end
 
+  test "a model run reports what each branch spent, and a scripted one shows nothing" do
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    # A scripted driver spends nothing, so no branch claims a token count.
+    render_click(view, "record")
+    wait_until(fn -> render(view) =~ "halt" and render(view) =~ "root.1" end)
+    render_click(view, "select", %{"turn" => "2"})
+    render_click(view, "fork")
+    wait_until(fn -> not (render(view) =~ "running") end)
+
+    refute render(view) =~ "tok"
+    refute render(view) =~ "race so far"
+
+    # The same lab driven by a model against the scripted API: now there is
+    # a bill, per branch and for the race.
+    render_click(view, "record_model")
+    wait_until(fn -> render(view) =~ "done(" end, 200)
+
+    render_click(view, "select", %{"turn" => "1"})
+    render_click(view, "fork")
+    wait_until(fn -> not (render(view) =~ "running") end, 200)
+    html = render(view)
+
+    # The fake API bills 10 in and 5 out a turn, and a branch pays only for
+    # the turns past its fork point, never for the replayed prefix.
+    assert html =~ ~r/· \d+\+\d+ tok/
+    assert html =~ "race so far:"
+    assert html =~ ~r/across \d+ finished branch/
+  end
+
   test "record, pick a turn, fork, and watch the race resolve" do
     {:ok, view, html} = live(build_conn(), "/")
     assert html =~ "no run yet"

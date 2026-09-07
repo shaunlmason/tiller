@@ -56,6 +56,12 @@ Tiller (DynamicSupervisor)
   is *decisive* if the branch ends somewhere else; the smallest decisive one
   is the one whose trajectory differs in the fewest turns. Measured on the
   log, so axes never need comparing.
+- **Cost** (`Tiller.Driver.usage/1`): a driver that spends anything reports
+  what it spent, and the lab shows it per branch and for the race. A fork
+  is billed only for the turns it decided: the prefix is replayed from the
+  log, not re-requested, and the tally it inherits at the fork point is the
+  source's bill, not its own. A scripted driver reports nothing rather than
+  a zero it did not earn.
 - **Control band** (`Tiller.Race.noise_floor/2`): with a model deciding each
   turn, everything after the fork point is a fresh sample, so two branches
   that changed nothing can still diverge. A race carries several control

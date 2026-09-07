@@ -376,8 +376,12 @@ defmodule Tiller.Session do
 
   @impl true
   def handle_call(:info, _from, s) do
-    {:reply,
-     Map.take(s, [:id, :parent_id, :mutation, :turns, :status, :latency, :kill_at, :resumed]), s}
+    info =
+      s
+      |> Map.take([:id, :parent_id, :mutation, :turns, :status, :latency, :kill_at, :resumed])
+      |> Map.put(:usage, Tiller.Driver.usage(s.driver, s.ctx))
+
+    {:reply, info, s}
   end
 
   def handle_call({:fork, turn, mutation, opts}, _from, s) do
