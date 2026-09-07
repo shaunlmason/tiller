@@ -7,7 +7,11 @@ defmodule Tiller.Event do
   (`seq`, `turn`), and a uniform halt record, so several branches can share
   one ordered store and still be pulled apart.
 
-  Halt records use `action: :halt` and `result: {:halted, turn_count}`.
+  Halt records use `action: :halt` and `result: {:halted, turn_count}`, or
+  `{:halted, turn_count, reason}` when a driver ended the run abnormally
+  (a refusal, a budget, an API failure). Both match `halt?/1`, and the
+  two forms differ under `Tiller.Divergence`, so a branch that gave up
+  diverges from one that finished.
   """
 
   @enforce_keys [:seq, :session_id, :turn, :action, :result]
@@ -16,7 +20,11 @@ defmodule Tiller.Event do
   @typedoc "A quoted MFA term; the grammar is the capability boundary."
   @type action :: {:call, module, atom, [term]}
 
-  @type result :: {:ok, term} | {:error, term} | {:halted, non_neg_integer}
+  @type result ::
+          {:ok, term}
+          | {:error, term}
+          | {:halted, non_neg_integer}
+          | {:halted, non_neg_integer, term}
 
   @type t :: %__MODULE__{
           # monotonic, globally ordered across all sessions
@@ -32,17 +40,39 @@ defmodule Tiller.Event do
         }
 
   @doc "Build the terminal record for a session that ran `turns` turns."
-  @spec halt(pos_integer, binary, binary | nil, non_neg_integer) :: t
-  def halt(seq, session_id, parent_id, turns) do
+  @spec halt(pos_integer, binary, binary | nil, non_neg_integer, term) :: t
+  def halt(seq, session_id, parent_id, turns, reason \\ nil) do
     %__MODULE__{
       seq: seq,
       session_id: session_id,
       parent_id: parent_id,
       turn: turns,
       action: :halt,
-      result: {:halted, turns}
+      result: halted(turns, reason)
     }
   end
+
+  @doc "The terminal result: with a reason when a driver gave one."
+  @spec halted(non_neg_integer, term) :: result
+  def halted(turns, nil), do: {:halted, turns}
+  def halted(turns, reason), do: {:halted, turns, reason}
+
+  @doc """
+  How many turns a terminal result counts, whichever form it takes.
+
+  Everything that asks "did this session finish, and after how many
+  turns" goes through here, so the optional reason never has to be
+  matched at a call site.
+  """
+  @spec halted_turns(result) :: non_neg_integer | nil
+  def halted_turns({:halted, n}), do: n
+  def halted_turns({:halted, n, _reason}), do: n
+  def halted_turns(_other), do: nil
+
+  @doc "Why a session ended, when a driver said: `nil` for a normal halt."
+  @spec halt_reason(result) :: term
+  def halt_reason({:halted, _n, reason}), do: reason
+  def halt_reason(_other), do: nil
 
   @doc "Is this the terminal record?"
   @spec halt?(t | tuple) :: boolean

@@ -10,16 +10,49 @@ defmodule Tiller.Driver do
   A driver may also return `{:replay, action, result, ctx}`: the Session
   records the action with that result and does not evaluate it. Only
   `Tiller.Driver.Replay` does this; it is how a recorded prefix is replayed
-  without re-running its tools.
+  without re-running its tools. `{:halt, reason}` ends the run and records
+  the reason, which is how an abnormal ending (a refusal, a spent budget)
+  diverges from a normal one.
+
+  Two callbacks are optional, and a scripted driver needs neither:
+
+    * `observe/3` is how a result reaches the driver at all. The session
+      calls it after recording each event. `Tiller.FakeDriver` never looks
+      at a result; a model has to.
+    * `override/3` is called at fork time for a `{:result_override, turn,
+      result}` mutation, so a driver whose context embeds past results (a
+      conversation) can rewrite the one that changed.
   """
 
   @callback next_action(ctx :: term()) ::
               {:action, term(), ctx :: term()}
               | {:replay, term(), Tiller.Event.result(), ctx :: term()}
               | :halt
+              | {:halt, term()}
+
+  @callback observe(ctx :: term(), Tiller.Event.action(), Tiller.Event.result()) :: term()
+  @callback override(ctx :: term(), non_neg_integer, Tiller.Event.result()) :: term()
+
+  @optional_callbacks observe: 3, override: 3
 
   @doc "Build a quoted action term: the grammar is the capability boundary."
   def action(f, args \\ []), do: {:call, Tiller.Tools, f, args}
+
+  @doc "Fold a recorded result into the driver's context, if it observes."
+  @spec observe(module, term, Tiller.Event.action(), Tiller.Event.result()) :: term
+  def observe(driver, ctx, action, result) do
+    if function_exported?(driver, :observe, 3),
+      do: driver.observe(ctx, action, result),
+      else: ctx
+  end
+
+  @doc "Rewrite the result the driver remembers for `turn`, if it can."
+  @spec override(module, term, non_neg_integer, Tiller.Event.result()) :: term
+  def override(driver, ctx, turn, result) do
+    if function_exported?(driver, :override, 3),
+      do: driver.override(ctx, turn, result),
+      else: ctx
+  end
 end
 
 defmodule Tiller.FakeDriver do

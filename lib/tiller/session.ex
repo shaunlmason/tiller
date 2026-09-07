@@ -45,7 +45,7 @@ defmodule Tiller.Session do
   """
   use GenServer
 
-  alias Tiller.{Event, Mutation, ToolState}
+  alias Tiller.{Driver, Event, Mutation, ToolState}
   alias Tiller.Driver.Replay
 
   @type id :: binary
@@ -57,13 +57,17 @@ defmodule Tiller.Session do
     id = Keyword.get_lazy(opts, :id, &unique_id/0)
     Process.put(:tiller_session_id, id)
     state = Keyword.get(opts, :state, Tiller.State)
+    whitelist = Keyword.get(opts, :whitelist, Tiller.Actions.root_whitelist())
+    # A driver runs in this process; this is how it can offer exactly what
+    # the session would allow (Tiller.Session.current_whitelist/0).
+    Process.put(:tiller_session_whitelist, whitelist)
 
     s = %{
       id: id,
       parent_id: Keyword.get(opts, :parent_id),
       driver: Keyword.fetch!(opts, :driver),
       ctx: Keyword.fetch!(opts, :ctx),
-      whitelist: Keyword.get(opts, :whitelist, Tiller.Actions.root_whitelist()),
+      whitelist: whitelist,
       state: state,
       parent: Keyword.get(opts, :parent),
       latency: Keyword.get(opts, :latency, 0),
@@ -91,7 +95,9 @@ defmodule Tiller.Session do
         s = %{s | ctx: snap.ctx, turns: turn, status: :running, resumed: true}
 
         if state.bump_resumes(id) > @max_resumes do
-          {:ok, halt(s)}
+          # A branch that keeps dying at the same turn stops here, and the
+          # log says why rather than just ending.
+          {:ok, halt(s, :max_resumes)}
         else
           send(self(), :turn)
           {:ok, s}
@@ -107,8 +113,8 @@ defmodule Tiller.Session do
 
       events ->
         case List.last(events) do
-          %Event{action: :halt, result: {:halted, n}} ->
-            {:halted, n}
+          %Event{action: :halt, result: r} ->
+            {:halted, Event.halted_turns(r)}
 
           _ ->
             turn = length(events)
@@ -202,6 +208,18 @@ defmodule Tiller.Session do
   @spec current_turn() :: non_neg_integer | nil
   def current_turn, do: Process.get(:tiller_session_turn)
 
+  @doc """
+  The whitelist of the session the calling process is running in.
+
+  A driver runs inside the session process, so this is how one that
+  builds a tool surface (`Tiller.Driver.LLM`) offers exactly what the
+  session would allow. It is what makes a `{:whitelist, list}` mutation
+  literally a different tools array in the request, rather than a
+  refusal after the model has already chosen.
+  """
+  @spec current_whitelist() :: [{atom, arity}] | nil
+  def current_whitelist, do: Process.get(:tiller_session_whitelist)
+
   @doc "Start the loop. Returns immediately; the run proceeds one turn per message."
   @spec run(pid | id) :: :ok
   def run(pid) when is_pid(pid), do: GenServer.cast(pid, :run)
@@ -218,13 +236,13 @@ defmodule Tiller.Session do
 
       result =
         case List.last(Tiller.State.events(id)) do
-          %Event{action: :halt, result: {:halted, n}} ->
-            {:halted, n}
+          %Event{action: :halt, result: r} ->
+            {:halted, Event.halted_turns(r)}
 
           _ ->
             receive do
-              {:tiller_event, %Event{session_id: ^id, action: :halt, result: {:halted, n}}} ->
-                {:halted, n}
+              {:tiller_event, %Event{session_id: ^id, action: :halt, result: r}} ->
+                {:halted, Event.halted_turns(r)}
             after
               timeout -> {:error, :timeout}
             end
@@ -332,8 +350,11 @@ defmodule Tiller.Session do
   defp plan({:driver, mod, ctx}, _turn, _same), do: {:ok, {mod, ctx}, [], []}
   defp plan({:latency, ms}, _turn, same), do: {:ok, same, [], latency: ms}
 
-  defp plan({:result_override, at, result}, turn, same) when at < turn,
-    do: {:ok, same, [overrides: %{at => result}], []}
+  # The prefix replays the new result; a driver whose context embeds past
+  # results (a conversation) rewrites its own copy through override/3.
+  defp plan({:result_override, at, result}, turn, {driver, dctx}) when at < turn,
+    do:
+      {:ok, {driver, Driver.override(driver, dctx, at, result)}, [overrides: %{at => result}], []}
 
   defp plan({:result_override, at, _}, turn, _same),
     do: {:error, {:override_outside_prefix, at, turn}}
@@ -347,7 +368,11 @@ defmodule Tiller.Session do
 
     case s.driver.next_action(s.ctx) do
       :halt ->
-        {:noreply, halt(s)}
+        {:noreply, halt(s, nil)}
+
+      # A driver that gave up says why, and the reason is in the log.
+      {:halt, reason} ->
+        {:noreply, halt(s, reason)}
 
       {:action, a, ctx} ->
         Process.put(:tiller_session_turn, s.turns)
@@ -378,6 +403,9 @@ defmodule Tiller.Session do
 
   defp record(s, action, result, ctx) do
     {:ok, _event} = s.state.append(s.id, s.parent_id, s.turns, action, result)
+    # How a result reaches the driver: scripted drivers ignore it, a model
+    # needs it to choose the next action.
+    ctx = Driver.observe(s.driver, ctx, action, result)
     schedule_turn(s)
     {:noreply, %{s | ctx: ctx, turns: s.turns + 1}}
   end
@@ -385,8 +413,10 @@ defmodule Tiller.Session do
   defp schedule_turn(%{latency: 0}), do: send(self(), :turn)
   defp schedule_turn(%{latency: ms}), do: Process.send_after(self(), :turn, ms)
 
-  defp halt(s) do
-    {:ok, _event} = s.state.append(s.id, s.parent_id, s.turns, :halt, {:halted, s.turns})
+  defp halt(s, reason) do
+    {:ok, _event} =
+      s.state.append(s.id, s.parent_id, s.turns, :halt, Event.halted(s.turns, reason))
+
     if s.parent, do: send(s.parent, {:subagent_halted, self(), s.turns})
     %{s | status: {:halted, s.turns}}
   end
