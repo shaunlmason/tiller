@@ -11,7 +11,11 @@
 #     mix test --include integration
 set -eu
 [ $# -eq 3 ] || { echo "usage: $0 <open-seed-checkout> <seed-binary> <out-dir>" >&2; exit 64; }
-src=$1; seed=$2; out=$3
+# Every path is made absolute before the cd below: a relative argument
+# (CI passes .ci/open-seed) would otherwise be re-read inside the new
+# directory and miss.
+abs() { case $1 in /*) printf '%s\n' "$1" ;; *) printf '%s/%s\n' "$(pwd)" "$1" ;; esac; }
+src=$(abs "$1"); seed=$(abs "$2"); out=$(abs "$3")
 rm -rf "$out"; mkdir -p "$out"; cd "$out"
 git init -q
 cp -r "$src/.seed" .
