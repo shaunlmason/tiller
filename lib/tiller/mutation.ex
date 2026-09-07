@@ -52,6 +52,14 @@ defmodule Tiller.Mutation do
   fresh sample, and comparing controls to each other is what tells a
   decisive mutation from ordinary variance.
 
+  `:limit` (default 24) caps the result. A long run reaches many points
+  on every axis, and each branch records a whole trajectory the lab then
+  draws a cell per turn for, so an uncapped sweep of a long run costs
+  roughly the square of its length. The cap takes one from each axis in
+  turn rather than truncating the list, so no axis is starved by the one
+  that happened to generate most: what comes back is a spread, not a
+  prefix. `limit: :infinity` asks for all of them.
+
   Pure: give it a recorded trajectory and a whitelist, get a list back.
   """
   @spec sweep([Event.t()], [{atom, arity}], non_neg_integer, keyword) :: [t | nil]
@@ -59,8 +67,33 @@ defmodule Tiller.Mutation do
     axes = Keyword.get(opts, :axes, @axes -- [:driver])
     steps = Enum.reject(events, &Event.halt?/1)
 
-    List.duplicate(nil, Keyword.get(opts, :controls, 1)) ++
-      for axis <- axes, mutation <- for_axis(axis, steps, whitelist, turn, opts), do: mutation
+    controls = List.duplicate(nil, Keyword.get(opts, :controls, 1))
+    by_axis = for axis <- axes, do: for_axis(axis, steps, whitelist, turn, opts)
+    limit = Keyword.get(opts, :limit, 24)
+
+    controls ++ spread(by_axis, room(limit, length(controls)))
+  end
+
+  defp room(:infinity, _taken), do: :infinity
+  defp room(limit, taken), do: max(limit - taken, 0)
+
+  # One from each axis in turn, so a cap costs every axis evenly.
+  defp spread(_by_axis, 0), do: []
+
+  defp spread(by_axis, room) do
+    case Enum.reject(by_axis, &(&1 == [])) do
+      [] ->
+        []
+
+      lists ->
+        heads = Enum.map(lists, &hd/1)
+        tails = Enum.map(lists, &tl/1)
+
+        case room do
+          :infinity -> heads ++ spread(tails, :infinity)
+          n -> Enum.take(heads, n) ++ spread(tails, max(n - length(heads), 0))
+        end
+    end
   end
 
   defp for_axis(:whitelist, steps, whitelist, turn, _opts) do

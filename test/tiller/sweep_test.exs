@@ -81,6 +81,37 @@ defmodule Tiller.SweepTest do
     assert [{:latency, 5}, {:latency, 500}] = sweep
   end
 
+  test "a long run is capped, and the cap spreads across axes" do
+    long =
+      for turn <- 0..39 do
+        event(turn, Driver.action(:echo, [turn]))
+      end ++
+        [
+          %Event{
+            seq: 41,
+            session_id: "r",
+            parent_id: nil,
+            turn: 40,
+            action: :halt,
+            result: {:halted, 40}
+          }
+        ]
+
+    all = Mutation.sweep(long, @whitelist, 20, limit: :infinity)
+    assert length(all) > 40
+
+    capped = Mutation.sweep(long, @whitelist, 20)
+    assert length(capped) == 24
+
+    axes =
+      capped |> Enum.reject(&is_nil/1) |> Enum.map(&Mutation.axis/1) |> Enum.uniq() |> Enum.sort()
+
+    # every axis this run reaches is represented, not just the one that
+    # generated the most
+    assert axes == [:kill_at, :latency, :result_override, :whitelist]
+    assert 1 == Enum.count(capped, &is_nil/1)
+  end
+
   test "every generated mutation validates" do
     for m <- Mutation.sweep(run(), @whitelist, 2), m != nil do
       assert {:ok, ^m} = Mutation.validate(m)

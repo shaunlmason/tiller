@@ -207,7 +207,7 @@ defmodule TillerWeb.LabLive do
       <button
         phx-click="sweep"
         disabled={is_nil(@selected) or @total == 0}
-        title="One branch per tool this run still uses, per replayed turn, per turn it could die at, plus latency"
+        title="One branch per tool this run still uses, per replayed turn, per turn it could die at, plus latency; capped and spread across axes"
       >
         Sweep
       </button>
