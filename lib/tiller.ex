@@ -13,16 +13,55 @@ defmodule Tiller do
   use Application
 
   @doc """
-  Back to a blank slate: stop every supervised session (subagents, forks),
-  drop all events, reset the global tool state. Tests and the demo call this.
+  Sessions the store knows that are not running and have not halted.
+
+  After a restart with a durable store (`Tiller.State.Log`) that is every
+  run the restart interrupted.
   """
-  def reset do
+  @spec dead() :: [binary]
+  def dead do
+    Tiller.State.events()
+    |> Enum.map(& &1.session_id)
+    |> Enum.uniq()
+    |> Enum.filter(&(Tiller.Session.whereis(&1) == nil))
+    |> Enum.reject(&halted?/1)
+  end
+
+  @doc "Resume every session in `dead/0`: `[{id, result}]`."
+  @spec resume_dead() :: [{binary, {:ok, pid} | {:error, term}}]
+  def resume_dead, do: for(id <- dead(), do: {id, Tiller.Session.resume(id)})
+
+  defp halted?(id) do
+    case List.last(Tiller.State.events(id)) do
+      %Tiller.Event{action: :halt} -> true
+      _ -> false
+    end
+  end
+
+  @doc """
+  Stop every supervised session and tool state, keeping the store.
+
+  What a restart does to the running side of the system, without the
+  restart: `reset/0` builds on it, and the persistence tests use it to
+  reach the state a fresh VM would start in.
+  """
+  @spec reset_processes() :: :ok
+  def reset_processes do
     for sup <- [Tiller.Supervisor, Tiller.ToolStates],
         {_, pid, _, _} <- DynamicSupervisor.which_children(sup),
         is_pid(pid) do
       DynamicSupervisor.terminate_child(sup, pid)
     end
 
+    :ok
+  end
+
+  @doc """
+  Back to a blank slate: stop every supervised session (subagents, forks),
+  drop all events, reset the global tool state. Tests and the demo call this.
+  """
+  def reset do
+    reset_processes()
     Tiller.State.clear()
     Tiller.ToolState.reset()
     :ok

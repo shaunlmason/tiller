@@ -12,3 +12,12 @@ config :tiller, TillerWeb.Endpoint,
   server: config_env() == :dev
 
 config :logger, level: if(config_env() == :test, do: :warning, else: :info)
+
+# A durable store for the lab: every event, snapshot and profile is
+# appended here and read back at start (Tiller.State.Log), so `mix
+# phx.server` keeps its trajectories across a restart and
+# `Tiller.resume_dead/0` can pick up the runs it interrupted. Tests stay
+# in memory; TILLER_STATE_LOG overrides either.
+if config_env() == :dev do
+  config :tiller, state_log: "tmp/tiller-state.log"
+end
