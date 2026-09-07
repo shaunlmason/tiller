@@ -1,12 +1,21 @@
 name: ci
 
 on:
+  # Every push, not just main: a branch often sits pushed for a while before
+  # it has a pull request, and until then nothing else would check it. The
+  # cost is that a branch with an open pull request is built twice, once per
+  # event; the concurrency group below cancels superseded runs so only the
+  # newest push of each ref survives.
   push:
-    branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
 
 env:
   MIX_ENV: test
@@ -47,14 +56,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Pinned, not floating: a push to either repo's default branch would
+      # otherwise change what an unchanged tiller commit is tested against,
+      # and the two could drift apart mid-release. Verified together, both
+      # ways round, before pinning. Bump deliberately.
       - uses: actions/checkout@v4
         with:
           repository: shaunlmason/open-seed
+          ref: v0.1.0
           path: .ci/open-seed
 
       - uses: actions/checkout@v4
         with:
           repository: shaunlmason/open-seed-engine
+          ref: v0.16.0
           path: .ci/open-seed-engine
 
       - uses: actions/setup-go@v5
