@@ -2,7 +2,7 @@
 
 Date: 2026-09-06
 Repo: tiller
-Status: APPROVED (design; not built)
+Status: BUILT (MVP; see "What shipped" below)
 Mode: Builder
 
 ## Problem Statement
@@ -274,6 +274,49 @@ turn pane.
 
 Out of scope: streaming, parallel tool calls, model-spawned subagents,
 prompt-cache tuning before there are numbers.
+
+## What shipped (2026-09-07)
+
+Steps 1 to 5 and 7 of the plan below, as `mix test` with no credential:
+
+- **The Assignment passed.** `Tiller.Driver.LLM.Wire` is pure encode and
+  decode over maps; `Tiller.Tools.Schema` is the one table naming each
+  tool's parameters and their order, so named JSON maps onto positional
+  args in one place. Well inside the budget, so the tool surface keeps
+  the shape this design proposed.
+- **`Tiller.Driver` gained `observe/3` and `override/3`** as optional
+  callbacks, plus `{:halt, reason}`. The session calls `observe` after
+  recording each event and `override` at fork time for a result
+  override; `Tiller.Driver.Replay` forwards both, but only for the
+  branch's own turns, because the delegate's context already contains
+  the replayed prefix. A halt with a reason is logged as
+  `{:halted, turns, reason}`, and `Tiller.Event.halted_turns/1` is what
+  reads either form.
+- **`done/1`** is a tool on every whitelist, so a run's answer is an
+  action `Tiller.Race` compares two runs on.
+- **`Tiller.Driver.LLM`** speaks the Messages API over `:httpc` with
+  retries and turn and token caps. Refusals, caps and API failures end
+  the run through `{:halt, reason}`.
+- **`Tiller.FakeMessages`** is the Plug this is all tested against. It
+  validates the request shape (auto tool choice, strict tools, known
+  names), so request drift fails a test.
+- **The real API** is one opt-in test, `TILLER_ANTHROPIC_API_KEY` plus
+  `--include integration`.
+
+**One correction to the design.** The ctx type below carries a `tools`
+array built at context creation. That is wrong for the lab: a
+`{:whitelist, list}` fork changes the *session's* whitelist, and a baked
+array would leave the branch's model still being offered a tool the
+session would refuse. The array is derived per request from
+`Tiller.Session.current_whitelist/0` instead, with the context's own
+whitelist as the fallback outside a session. This is what the design's
+own claim ("a whitelist mutation is literally a different `tools`
+array") requires, and a test asserts the branch plans without the tool
+rather than being refused after choosing it.
+
+**Not built:** step 6, the control band and per-branch cost in the lab.
+Until it lands, the lab cannot separate a branch the mutation changed
+from one the model merely sampled differently.
 
 ## Next Steps
 

@@ -6,7 +6,8 @@ defmodule Tiller.PersistenceTest do
   """
   use ExUnit.Case, async: false
 
-  alias Tiller.{Divergence, Driver, Event, FakeDriver, Session, State, ToolState}
+  alias Tiller.{Divergence, Driver, Event, FakeDriver, FakeMessages, Session, State, ToolState}
+  alias Tiller.Driver.LLM
 
   setup do
     Tiller.reset()
@@ -256,6 +257,52 @@ defmodule Tiller.PersistenceTest do
     # an event with no snapshot after it: better to say so than to start a
     # session that would sit idle forever
     assert {:error, :no_resume_point} = Session.resume("headless")
+  end
+
+  test "a model-driven run resumes with the results it had already seen", %{path: path} do
+    # The seam where persistence meets the driver: a snapshot must hold the
+    # context *after* the result was folded in, or a resumed model wakes up
+    # having forgotten the answer it was reacting to. A scripted driver
+    # cannot show this, because it never looks at a result.
+    script = fn request ->
+      case FakeMessages.last_result(request) do
+        nil -> FakeMessages.tool_use("put", %{"key" => "k", "value" => "stored"})
+        _ -> FakeMessages.done("read it back")
+      end
+    end
+
+    {:ok, api} = FakeMessages.start(script)
+    on_exit(fn -> FakeMessages.stop(api) end)
+
+    ctx = LLM.context("Store something, then finish.", base_url: api.base_url)
+
+    spec = Session.child_spec(driver: LLM, ctx: ctx, id: "model", latency: 300)
+    {:ok, pid} = DynamicSupervisor.start_child(Tiller.Supervisor, spec)
+    Session.run(pid)
+
+    kill_mid_run(pid, "model")
+    Tiller.reset_processes()
+    ToolState.reset()
+    State.reopen(path)
+
+    Tiller.resume_dead()
+    assert {:halted, 2} = Session.await("model", 15_000)
+
+    # the run finished by deciding, not by starting over
+    assert [
+             %Event{action: {:call, _, :put, ["k", "stored"]}},
+             %Event{action: {:call, _, :done, ["read it back"]}},
+             %Event{action: :halt}
+           ] = State.events("model")
+
+    # and the request that decided it carried the earlier tool result, so
+    # the conversation survived the restart intact
+    last = List.last(FakeMessages.requests(api))
+
+    assert Enum.any?(last["messages"], fn
+             %{"content" => [%{"type" => "tool_result"} | _]} -> true
+             _ -> false
+           end)
   end
 
   test "clear empties the log too, so a restart after it starts blank", %{path: path} do
