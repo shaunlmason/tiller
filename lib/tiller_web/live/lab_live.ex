@@ -24,6 +24,7 @@ defmodule TillerWeb.LabLive do
        selected: nil,
        picked: nil,
        branches: [],
+       api: nil,
        race_started: nil
      )}
   end
@@ -51,7 +52,17 @@ defmodule TillerWeb.LabLive do
     Tiller.reset()
     State.subscribe(:all)
     Tiller.Demo.record()
-    {:noreply, assign(socket, events: [], selected: nil, picked: nil, branches: [])}
+    {:noreply, cleared(socket)}
+  end
+
+  # The same lab with a model deciding each turn, against a scripted
+  # stand-in for the API. This is the run where cost and the control band
+  # mean anything: a scripted driver spends nothing and never drifts.
+  def handle_event("record_model", _params, socket) do
+    Tiller.reset()
+    State.subscribe(:all)
+    {_pid, api} = Tiller.Demo.record_model()
+    {:noreply, assign(cleared(socket), api: api)}
   end
 
   def handle_event("reset", _params, socket) do
@@ -92,7 +103,7 @@ defmodule TillerWeb.LabLive do
     branches =
       for m <- mutations, {:ok, pid} <- [Session.fork(@root, turn, m)] do
         {:ok, id} = Session.id_of(pid)
-        %{id: id, mutation: m, events: [], verdict: nil, ms: nil}
+        %{id: id, mutation: m, events: [], verdict: nil, ms: nil, usage: nil}
       end
 
     started = System.monotonic_time(:millisecond)
@@ -123,7 +134,11 @@ defmodule TillerWeb.LabLive do
     if Event.halt?(e) do
       original = Enum.filter(assigns.events, &(&1.session_id == @root))
       ms = System.monotonic_time(:millisecond) - (assigns.race_started || 0)
-      %{b | verdict: Divergence.first_diff(original, b.events), ms: ms}
+      # Asked once, when the branch is done: the driver holds the tally and
+      # nothing pushes it, so this is the one moment it is both final and
+      # still reachable.
+      usage = if pid = Session.whereis(b.id), do: Session.info(pid).usage
+      %{b | verdict: Divergence.first_diff(original, b.events), ms: ms, usage: usage}
     else
       b
     end
@@ -182,6 +197,30 @@ defmodule TillerWeb.LabLive do
   defp compare_class(_, nil), do: ""
   defp compare_class(a, b), do: if(Event.key(a) == Event.key(b), do: "same", else: "diff")
 
+  defp cleared(socket),
+    do: assign(socket, events: [], selected: nil, picked: nil, branches: [])
+
+  # Tokens a branch spent past its fork point, or nothing at all for a
+  # driver that does not spend: a scripted run should not show a zero it
+  # did not earn.
+  defp tokens_text(nil), do: ""
+  defp tokens_text(%{input: i, output: o}), do: " · #{i}+#{o} tok"
+
+  # What the whole race cost, once anything has reported a number.
+  defp spent_text(branches) do
+    spenders = for b <- branches, is_map(b.usage), do: b.usage
+
+    if spenders == [] do
+      nil
+    else
+      i = spenders |> Enum.map(& &1.input) |> Enum.sum()
+      o = spenders |> Enum.map(& &1.output) |> Enum.sum()
+
+      "race so far: #{i} in + #{o} out across #{length(spenders)} finished " <>
+        "#{plural(length(spenders), "branch", "branches")}"
+    end
+  end
+
   # One sentence, built here rather than in the template, so it reads the
   # same on the page as it does in a test.
   defp band_text(%{controls: 0}), do: "control band: no control has finished yet"
@@ -198,6 +237,8 @@ defmodule TillerWeb.LabLive do
 
   defp plural(1, word), do: word
   defp plural(_, word), do: word <> "s"
+  defp plural(1, singular, _plural), do: singular
+  defp plural(_, _singular, plural), do: plural
 
   defp pair_text(nil), do: "nothing"
   defp pair_text(%Event{} = e), do: action_text(e.action) <> " " <> result_text(e.result)
@@ -223,6 +264,7 @@ defmodule TillerWeb.LabLive do
         ranked: ranked,
         smallest: smallest && smallest.id,
         floor: floor,
+        spent: spent_text(assigns.branches),
         columns: columns,
         picked_branch: Enum.find(ranked, &(&1.id == assigns.picked))
       )
@@ -231,6 +273,12 @@ defmodule TillerWeb.LabLive do
     <header>
       <h1>tiller lab</h1>
       <button phx-click="record">Record run</button>
+      <button
+        phx-click="record_model"
+        title="A model decides each turn, against a scripted stand-in for the Messages API: no credential, no cost"
+      >
+        Record model run
+      </button>
       <button phx-click="fork" disabled={is_nil(@selected) or @total == 0}>
         Fork at {if @selected, do: "turn #{@selected}", else: "…"}
       </button>
@@ -301,6 +349,7 @@ defmodule TillerWeb.LabLive do
         <p :if={@branches != []} class={"band #{if @floor.decisive > 0, do: "err"}"}>
           {band_text(@floor)}
         </p>
+        <p :if={@spent} class="band">{@spent}</p>
         <table :if={@branches != []} class="grid" id="grid">
           <thead>
             <tr>
@@ -338,7 +387,9 @@ defmodule TillerWeb.LabLive do
                   {verdict_text(b.verdict)}
                 </span>
                 <span class="tag">
-                  · {if b.decisive, do: "decisive", else: "path only"} · Δ{b.distance}
+                  · {if b.decisive, do: "decisive", else: "path only"} · Δ{b.distance}{tokens_text(
+                    b.usage
+                  )}
                 </span>
               </td>
             </tr>

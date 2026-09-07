@@ -32,6 +32,7 @@ defmodule Tiller.Driver.Replay do
           overrides: %{non_neg_integer => Event.result()},
           delegate: module,
           delegate_ctx: term,
+          baseline: %{input: non_neg_integer, output: non_neg_integer} | nil,
           turn: non_neg_integer
         }
 
@@ -59,6 +60,9 @@ defmodule Tiller.Driver.Replay do
       overrides: Keyword.get(opts, :overrides, %{}),
       delegate: delegate,
       delegate_ctx: delegate_ctx,
+      # What the source had already spent by the fork turn. The branch did
+      # not pay it, so it is subtracted back out of usage/1.
+      baseline: Tiller.Driver.usage(delegate, delegate_ctx),
       turn: 0,
       # false while the prefix is being replayed: those turns are already
       # in the delegate's context, which came from the fork-turn snapshot,
@@ -106,6 +110,19 @@ defmodule Tiller.Driver.Replay do
   happened. Nested branches recurse, since a delegate may itself be a
   Replay.
   """
+  # The prefix is replayed, not re-requested, so a branch's cost is only
+  # what its delegate spent past the fork point. The context it inherited
+  # already held the source's running total; that part is not this
+  # branch's bill.
+  @impl true
+  def usage(%{delegate: d, delegate_ctx: dctx} = ctx) do
+    case {Tiller.Driver.usage(d, dctx), Map.get(ctx, :baseline)} do
+      {nil, _} -> nil
+      {now, nil} -> now
+      {now, base} -> %{input: now.input - base.input, output: now.output - base.output}
+    end
+  end
+
   @impl true
   def override(ctx, turn, result) do
     %{ctx | delegate_ctx: Tiller.Driver.override(ctx.delegate, ctx.delegate_ctx, turn, result)}

@@ -36,6 +36,72 @@ defmodule Tiller.Demo do
     pid
   end
 
+  @doc """
+  The same lab, driven by a model instead of a script.
+
+  Records session "root" with `Tiller.Driver.LLM` against a scripted
+  stand-in for the Messages API, so it needs no credential and costs
+  nothing, and against the real API when one is configured. This is the
+  run that makes the model-only parts of the lab visible: token cost per
+  branch, and a control band that can actually be non-zero.
+
+  Options: `:base_url` and `:api_key` to point at the real API instead.
+  Returns `{pid, api}`, where `api` is `nil` when it went to the network.
+  """
+  def record_model(opts \\ []) do
+    {api, opts} =
+      if Keyword.has_key?(opts, :api_key) or Keyword.has_key?(opts, :base_url) do
+        {nil, opts}
+      else
+        {:ok, api} = Tiller.FakeMessages.start(&toy_goal/1)
+        {api, Keyword.put(opts, :base_url, api.base_url)}
+      end
+
+    ctx =
+      Tiller.Driver.LLM.context(
+        "Store the greeting \"hello from a model\" under the key greeting, " <>
+          "spend 4 from the budget, read the greeting back, then finish.",
+        Keyword.put_new(opts, :api_key, "fake")
+      )
+
+    sup = Application.fetch_env!(:tiller, :supervisor)
+    spec = Session.child_spec(driver: Tiller.Driver.LLM, ctx: ctx, id: "root")
+    {:ok, pid} = DynamicSupervisor.start_child(sup, spec)
+    Session.run(pid)
+    {pid, api}
+  end
+
+  # A stand-in model: it answers from what the conversation has already
+  # done, not from a fixed list, so branches racing concurrently against
+  # one fake API each get their own coherent run.
+  defp toy_goal(request) do
+    called = tools_called(request)
+
+    cond do
+      "put" not in called ->
+        Tiller.FakeMessages.tool_use(
+          "put",
+          %{"key" => "greeting", "value" => "hello from a model"},
+          text: "Storing it first."
+        )
+
+      "spend" not in called ->
+        Tiller.FakeMessages.tool_use("spend", %{"amount" => 4})
+
+      "get" not in called ->
+        Tiller.FakeMessages.tool_use("get", %{"key" => "greeting"})
+
+      true ->
+        Tiller.FakeMessages.done("stored the greeting, spent 4, read it back")
+    end
+  end
+
+  defp tools_called(request) do
+    for %{"role" => "assistant", "content" => blocks} <- Map.get(request, "messages", []),
+        %{"type" => "tool_use", "name" => name} <- List.wrap(blocks),
+        do: name
+  end
+
   def run do
     Tiller.reset()
     State.subscribe("root.1")

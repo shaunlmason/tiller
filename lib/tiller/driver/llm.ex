@@ -126,6 +126,9 @@ defmodule Tiller.Driver.LLM do
   synthesized `done` of a text-only reply) there is nothing to answer.
   """
   @impl true
+  def usage(%{usage: usage}), do: usage
+
+  @impl true
   def observe(%{pending: nil} = ctx, _action, _result), do: ctx
 
   def observe(%{pending: id} = ctx, _action, result) do

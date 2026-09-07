@@ -30,10 +30,21 @@ defmodule Tiller.Driver do
               | :halt
               | {:halt, term()}
 
+  @callback usage(ctx :: term()) :: %{input: non_neg_integer, output: non_neg_integer} | nil
   @callback observe(ctx :: term(), Tiller.Event.action(), Tiller.Event.result()) :: term()
   @callback override(ctx :: term(), non_neg_integer, Tiller.Event.result()) :: term()
 
-  @optional_callbacks observe: 3, override: 3
+  @optional_callbacks usage: 1, observe: 3, override: 3
+
+  @doc """
+  What this run has spent, if the driver is the kind that spends anything.
+  `nil` from a scripted driver, which costs nothing and should not pretend
+  to a zero.
+  """
+  @spec usage(module, term) :: %{input: non_neg_integer, output: non_neg_integer} | nil
+  def usage(driver, ctx) do
+    if function_exported?(driver, :usage, 1), do: driver.usage(ctx), else: nil
+  end
 
   @doc "Build a quoted action term: the grammar is the capability boundary."
   def action(f, args \\ []), do: {:call, Tiller.Tools, f, args}

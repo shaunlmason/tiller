@@ -5,7 +5,7 @@ defmodule Tiller.Driver.LLMTest do
   """
   use ExUnit.Case, async: false
 
-  alias Tiller.{Actions, Event, FakeMessages, Race, Session, State}
+  alias Tiller.{Actions, Driver, Event, FakeDriver, FakeMessages, Race, Session, State}
   alias Tiller.Driver.LLM
 
   setup do
@@ -290,5 +290,47 @@ defmodule Tiller.Driver.LLMTest do
       ctx = LLM.context("goal", base_url: "http://unused")
       assert LLM.override(ctx, 7, {:ok, :x}) == ctx
     end
+  end
+
+  test "usage is reported through the session, and a fork pays only past its fork point" do
+    {:ok, api} =
+      FakeMessages.start([
+        FakeMessages.tool_use("put", %{"key" => "k", "value" => 1},
+          input_tokens: 100,
+          output_tokens: 20
+        ),
+        FakeMessages.tool_use("get", %{"key" => "k"}, input_tokens: 200, output_tokens: 30),
+        FakeMessages.done("done", input_tokens: 300, output_tokens: 40)
+      ])
+
+    on_exit(fn -> FakeMessages.stop(api) end)
+
+    ctx = LLM.context("store and read", base_url: api.base_url, api_key: "x")
+    {:ok, pid} = Session.start_link(driver: LLM, ctx: ctx, id: "orig")
+    Session.run(pid)
+    assert {:halted, 3} = Session.await(pid)
+
+    # Three turns billed, accumulated across them.
+    assert %{usage: %{input: 600, output: 90}} = Session.info("orig")
+
+    # A branch forked at turn 2 replays two turns without asking the API, so
+    # it is billed only for what it decides itself. The context it inherits
+    # already carries the source's 300 in / 50 out by that turn; that is the
+    # original's bill, not the branch's, and must not appear here.
+    {:ok, branch} = Session.fork("orig", 2, nil)
+    {:ok, id} = Session.id_of(branch)
+    Session.run(branch)
+    assert {:halted, _} = Session.await(id)
+
+    # One decision past the fork, at the fake's default rate.
+    assert %{usage: %{input: 10, output: 5}} = Session.info(id)
+  end
+
+  test "a scripted driver reports no usage at all, rather than a zero it did not earn" do
+    ctx = FakeDriver.context([Driver.action(:echo, ["hi"])])
+    {:ok, pid} = Session.start_link(driver: FakeDriver, ctx: ctx, id: "scripted")
+    Session.run(pid)
+    assert {:halted, 1} = Session.await(pid)
+    assert %{usage: nil} = Session.info("scripted")
   end
 end
