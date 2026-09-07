@@ -59,7 +59,11 @@ defmodule Tiller.Driver.Replay do
       overrides: Keyword.get(opts, :overrides, %{}),
       delegate: delegate,
       delegate_ctx: delegate_ctx,
-      turn: 0
+      turn: 0,
+      # false while the prefix is being replayed: those turns are already
+      # in the delegate's context, which came from the fork-turn snapshot,
+      # so observing them again would double-count them.
+      delegating: false
     }
   end
 
@@ -70,10 +74,40 @@ defmodule Tiller.Driver.Replay do
   end
 
   def next_action(%{prefix: [], delegate: delegate, delegate_ctx: dctx} = ctx) do
+    ctx = %{ctx | delegating: true}
+
     case delegate.next_action(dctx) do
       :halt -> :halt
+      {:halt, reason} -> {:halt, reason}
       {:action, a, dctx2} -> {:action, a, %{ctx | delegate_ctx: dctx2, turn: ctx.turn + 1}}
       {:replay, a, r, dctx2} -> {:replay, a, r, %{ctx | delegate_ctx: dctx2, turn: ctx.turn + 1}}
     end
+  end
+
+  @doc """
+  Results from the branch's own turns reach the delegate; replayed ones do
+  not, because the delegate's context already contains them.
+  """
+  @impl true
+  def observe(%{delegating: true} = ctx, action, result) do
+    %{ctx | delegate_ctx: Tiller.Driver.observe(ctx.delegate, ctx.delegate_ctx, action, result)}
+  end
+
+  def observe(ctx, _action, _result), do: ctx
+
+  @doc """
+  A result override reaches the delegate through here.
+
+  A branch's driver is this module, so forking a branch again aims the
+  fork's `override/3` at Replay rather than at the driver underneath.
+  Without forwarding, the replayed event would carry the new result while
+  the delegate (a conversation, say) still remembered the old one, and
+  the model would choose its next action from a history that never
+  happened. Nested branches recurse, since a delegate may itself be a
+  Replay.
+  """
+  @impl true
+  def override(ctx, turn, result) do
+    %{ctx | delegate_ctx: Tiller.Driver.override(ctx.delegate, ctx.delegate_ctx, turn, result)}
   end
 end

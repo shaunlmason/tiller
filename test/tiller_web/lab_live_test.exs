@@ -23,6 +23,16 @@ defmodule TillerWeb.LabLiveTest do
     end
   end
 
+  test "a halt that carries a reason renders instead of crashing the lab" do
+    # what a refusal, a spent budget, or a lost API leaves in the log
+    {:ok, _} =
+      Tiller.State.append("root", nil, 0, :halt, Tiller.Event.halted(0, {:refusal, "cyber"}))
+
+    {:ok, view, html} = live(build_conn(), "/")
+    assert html =~ "refusal"
+    assert render(view) =~ "halt"
+  end
+
   test "sweep forks every mutation the run reaches, not the hand-picked few" do
     {:ok, view, _html} = live(build_conn(), "/")
 

@@ -69,13 +69,18 @@ Tiller (DynamicSupervisor)
   it stays out of `lib/tiller`.
 - **Driver** (`Tiller.Driver` behaviour): the only seam for "where the next
   action comes from". `Tiller.FakeDriver` scripts a list of actions for
-  tests/demos. A real LLM driver (grammar-constrained decode → quoted term)
-  plugs in here with no other changes.
+  tests/demos. `Tiller.Driver.LLM` is the real one: the session's whitelist
+  becomes the model's tool surface, a `tool_use` block becomes the quoted
+  term, and a run ends by calling `done/1`. Two optional callbacks carry
+  what a script never needed: `observe/3` hands a result back to the
+  driver, and `override/3` lets a driver whose context embeds past results
+  rewrite the one a `result_override` fork changed.
 - **Mutation** (`Tiller.Mutation`): the vocabulary of "one thing
   different", plus `sweep/4`, which reads a recorded run and returns every
   mutation that run reaches: one per tool it still uses after the fork
   point, one per replayed turn, one per turn it could die at, and a
-  latency. The lab's Sweep button races all of them at once.
+  latency, capped (24 by default) by taking from each axis in turn so no
+  axis is starved. The lab's Sweep button races the result.
 - **Actions** (`Tiller.Actions`): the registry. The grammar *is* the
   capability boundary — an agent can only touch what's in its whitelist.
   Subagents get a smaller whitelist and can't spawn (depth limit).
@@ -101,7 +106,13 @@ Tiller (DynamicSupervisor)
   Add `Task.async_stream` when a single turn needs fan-out.
 - `spawn_subagent` starts the child and returns; there is no `await` tool
   yet, so a parent cannot use a subagent's result within its own run.
-- No real LLM driver yet. The FakeDriver is the contract.
+- `Tiller.Driver.LLM` is exercised against `Tiller.FakeMessages`, a
+  scripted stand-in for `POST /v1/messages` on Bandit, so the suite needs
+  no key and no network. The real API is one opt-in test
+  (`TILLER_ANTHROPIC_API_KEY=... mix test --include integration`).
+- The lab does not yet show a control band or per-branch token cost, so a
+  branch that differs only because the model sampled differently reads the
+  same as one the mutation changed (`docs/designs/llm-driver.md`, step 6).
 
 ## Research
 
@@ -149,7 +160,9 @@ Projects looked at while shaping tiller, with the verdict on each.
 `docs/design.md` MVP and stretch, all five open questions resolved: attributed
 event store, async sessions, six tools, replay, fork on all five mutation
 axes, concurrent race, first divergence, decisive-mutation ranking, and the
-LiveView lab with the branch-by-turn grid, plus the open-seed client. Run:
+LiveView lab with the branch-by-turn grid, plus the open-seed client and the
+`docs/designs/llm-driver.md` MVP: a real driver, so a mutation changes what
+the agent decides rather than only which script it replays. Run:
 
 Locally, `mise install` reads `mise.toml`. In Claude Code on the web the
 SessionStart hook in `.claude/hooks/session-start.sh` installs prebuilt OTP
