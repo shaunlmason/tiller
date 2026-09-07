@@ -13,6 +13,8 @@ erl_crash.dump
 # Hex release tarball
 /tiller-*.tar
 
-# Temporary files, e.g. from tests
+# Temporary files, e.g. from tests, and the dev state log
 /tmp/
+
+# Repos the integration job checks out
 .ci/

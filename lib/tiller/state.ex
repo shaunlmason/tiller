@@ -16,8 +16,11 @@ defmodule Tiller.State do
   process is what lets a killed session resume and a fork start from any
   turn of a session that is no longer alive.
 
-  ponytail: in-memory, newest first internally so append is O(1). Move to
-  ETS/Ecto when you need replay across restarts.
+  In memory, newest first internally so append is O(1). With
+  `config :tiller, state_log: path` (or `TILLER_STATE_LOG`) every write is
+  also appended to that file (`Tiller.State.Log`) and the store is rebuilt
+  from it at start, so a trajectory outlives the VM that produced it and
+  `Tiller.Session.resume/1` can pick a run back up where it stopped.
   """
   use GenServer
 
@@ -30,17 +33,92 @@ defmodule Tiller.State do
     GenServer.start_link(__MODULE__, [], Keyword.put(opts, :name, __MODULE__))
   end
 
-  @impl true
-  def init(_), do: {:ok, initial()}
+  @doc """
+  The log path this store would start with: `TILLER_STATE_LOG` when it is
+  set, else `config :tiller, :state_log`, else none.
 
-  defp initial, do: %{seq: 0, events: [], subs: %{}, snapshots: %{}, resumes: %{}}
-
-  @doc "Append an attributed event. Returns the stored event with its `seq`."
-  @spec append(binary, binary | nil, non_neg_integer, Event.action() | :halt, Event.result()) ::
-          {:ok, Event.t()}
-  def append(session_id, parent_id, turn, action, result) do
-    GenServer.call(__MODULE__, {:append, session_id, parent_id, turn, action, result})
+  The environment wins so a configured default (dev writes one) can be
+  redirected, or turned off with an empty value, without editing config.
+  """
+  @spec configured_log_path() :: Path.t() | nil
+  def configured_log_path do
+    case System.get_env("TILLER_STATE_LOG") do
+      nil -> Application.get_env(:tiller, :state_log)
+      "" -> nil
+      path -> path
+    end
   end
+
+  @impl true
+  def init(_), do: {:ok, load(configured_log_path())}
+
+  defp initial(path \\ nil, log \\ nil) do
+    %{
+      seq: 0,
+      events: [],
+      subs: %{},
+      snapshots: %{},
+      resumes: %{},
+      profiles: %{},
+      path: path,
+      log: log
+    }
+  end
+
+  # The store a log file describes, or an empty one when there is no log.
+  defp load(nil), do: initial()
+
+  defp load(path) do
+    s =
+      Enum.reduce(Tiller.State.Log.read(path), initial(path), fn
+        {:event, %Event{} = e}, s -> %{s | seq: max(s.seq, e.seq), events: [e | s.events]}
+        {:snapshot, id, turn, snap}, s -> put_snapshot(s, id, turn, snap)
+        {:profile, id, profile}, s -> %{s | profiles: Map.put(s.profiles, id, profile)}
+        {:resumes, id, n}, s -> %{s | resumes: Map.put(s.resumes, id, n)}
+        _unknown, s -> s
+      end)
+
+    %{s | log: Tiller.State.Log.open(path)}
+  end
+
+  defp record(s, frame), do: record_all(s, [frame])
+
+  defp record_all(%{log: nil}, _frames), do: :ok
+  defp record_all(%{log: io}, frames), do: Tiller.State.Log.append_all(io, frames)
+
+  defp put_snapshot(s, id, turn, snap) do
+    update_in(
+      s.snapshots,
+      &Map.update(&1, id, %{turn => snap}, fn m -> Map.put(m, turn, snap) end)
+    )
+  end
+
+  @doc """
+  Append an attributed event. Returns the stored event with its `seq`.
+
+  `next_snapshot` parks the following turn's starting point in the same
+  write. The two belong together: an event durable without the snapshot
+  that follows it leaves a run with no point to resume from, so a crash
+  between them must not be possible.
+  """
+  @spec append(
+          binary,
+          binary | nil,
+          non_neg_integer,
+          Event.action() | :halt,
+          Event.result(),
+          map | nil
+        ) :: {:ok, Event.t()}
+  def append(session_id, parent_id, turn, action, result, next_snapshot \\ nil) do
+    GenServer.call(
+      __MODULE__,
+      {:append, session_id, parent_id, turn, action, result, next_snapshot}
+    )
+  end
+
+  @doc "Every session the store knows, from its events or its profile."
+  @spec sessions() :: [binary]
+  def sessions, do: GenServer.call(__MODULE__, :sessions)
 
   @doc "All events, oldest first."
   @spec events() :: [Event.t()]
@@ -67,6 +145,34 @@ defmodule Tiller.State do
   @spec snapshot(binary, non_neg_integer) :: {:ok, map} | :error
   def snapshot(session_id, turn), do: GenServer.call(__MODULE__, {:snapshot, session_id, turn})
 
+  @doc """
+  Remember how to start `id` again: the driver module and the options
+  that are not in a snapshot.
+
+  A snapshot carries the driver's context and the world, but not which
+  driver, so this is the missing half of bringing a session back in a VM
+  that never ran it.
+  """
+  @spec put_profile(binary, map) :: :ok
+  def put_profile(id, profile), do: GenServer.call(__MODULE__, {:put_profile, id, profile})
+
+  @doc "How `id` was started, if the store knows."
+  @spec profile(binary) :: {:ok, map} | :error
+  def profile(id), do: GenServer.call(__MODULE__, {:profile, id})
+
+  @doc """
+  Re-read the store from the log at `path` (`nil` for memory only).
+
+  What a restart does, callable directly, which is how the persistence
+  tests avoid restarting a VM.
+  """
+  @spec reopen(Path.t() | nil) :: :ok
+  def reopen(path), do: GenServer.call(__MODULE__, {:reopen, path})
+
+  @doc "The log file in use, or nil."
+  @spec log_path() :: Path.t() | nil
+  def log_path, do: GenServer.call(__MODULE__, :log_path)
+
   @doc "Count a resume of `session_id` (a supervisor restart mid-run). Returns the new count."
   @spec bump_resumes(binary) :: pos_integer
   def bump_resumes(session_id), do: GenServer.call(__MODULE__, {:bump_resumes, session_id})
@@ -78,7 +184,7 @@ defmodule Tiller.State do
   def clear, do: GenServer.call(__MODULE__, :clear)
 
   @impl true
-  def handle_call({:append, session_id, parent_id, turn, action, result}, _from, s) do
+  def handle_call({:append, session_id, parent_id, turn, action, result, next_snapshot}, _from, s) do
     seq = s.seq + 1
 
     event = %Event{
@@ -93,6 +199,18 @@ defmodule Tiller.State do
     for pid <- Map.get(s.subs, session_id, []) ++ Map.get(s.subs, :all, []) do
       send(pid, {:tiller_event, event})
     end
+
+    s =
+      case next_snapshot do
+        nil ->
+          record(s, {:event, event})
+          s
+
+        snap ->
+          # one write, so a crash cannot land between them
+          record_all(s, [{:event, event}, {:snapshot, session_id, turn + 1, snap}])
+          put_snapshot(s, session_id, turn + 1, snap)
+      end
 
     {:reply, {:ok, event}, %{s | seq: seq, events: [event | s.events]}}
   end
@@ -120,11 +238,8 @@ defmodule Tiller.State do
   end
 
   def handle_call({:snapshot, session_id, turn, snap}, _from, s) do
-    {:reply, :ok,
-     update_in(
-       s.snapshots,
-       &Map.update(&1, session_id, %{turn => snap}, fn m -> Map.put(m, turn, snap) end)
-     )}
+    record(s, {:snapshot, session_id, turn, snap})
+    {:reply, :ok, put_snapshot(s, session_id, turn, snap)}
   end
 
   def handle_call({:snapshot, session_id, turn}, _from, s) do
@@ -133,12 +248,33 @@ defmodule Tiller.State do
 
   def handle_call({:bump_resumes, session_id}, _from, s) do
     s = update_in(s.resumes, &Map.update(&1, session_id, 1, fn n -> n + 1 end))
+    record(s, {:resumes, session_id, s.resumes[session_id]})
     {:reply, s.resumes[session_id], s}
+  end
+
+  def handle_call({:put_profile, id, profile}, _from, s) do
+    record(s, {:profile, id, profile})
+    {:reply, :ok, %{s | profiles: Map.put(s.profiles, id, profile)}}
+  end
+
+  def handle_call({:profile, id}, _from, s), do: {:reply, Map.fetch(s.profiles, id), s}
+
+  def handle_call({:reopen, path}, _from, s) do
+    if s.log, do: File.close(s.log)
+    {:reply, :ok, load(path)}
+  end
+
+  def handle_call(:log_path, _from, s), do: {:reply, s.path, s}
+
+  def handle_call(:sessions, _from, s) do
+    from_events = s.events |> Enum.map(& &1.session_id) |> Enum.uniq()
+    {:reply, Enum.uniq(from_events ++ Map.keys(s.profiles)), s}
   end
 
   def handle_call(:clear, _from, s) do
     for {_key, pids} <- s.subs, pid <- pids, do: send(pid, {:tiller_reset})
-    {:reply, :ok, initial()}
+    log = if s.log, do: Tiller.State.Log.truncate(s.log, s.path), else: nil
+    {:reply, :ok, initial(s.path, log)}
   end
 
   @impl true

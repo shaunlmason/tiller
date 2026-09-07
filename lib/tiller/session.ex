@@ -79,6 +79,17 @@ defmodule Tiller.Session do
       resumed: false
     }
 
+    # What bringing this session back needs beyond a snapshot: a snapshot
+    # holds the driver's context and the world, not which driver.
+    state.put_profile(id, %{
+      driver: s.driver,
+      parent_id: s.parent_id,
+      whitelist: s.whitelist,
+      latency: s.latency,
+      kill_at: s.kill_at,
+      mutation: s.mutation
+    })
+
     tool_opt = Keyword.get(opts, :tool_state)
 
     case resume_point(state, id) do
@@ -266,6 +277,75 @@ defmodule Tiller.Session do
   defp resolve_id(id) when is_binary(id), do: {:ok, id}
   defp resolve_id(pid) when is_pid(pid), do: id_of(pid)
 
+  @doc """
+  Start a session again that the store knows but no process is running:
+  one the VM was restarted out from under, or a branch whose supervisor
+  gave up.
+
+  It comes back the way a supervisor restart brings one back, from the
+  snapshot taken before the turn that was in flight, so nothing recorded
+  is lost and the turn that never finished runs again.
+
+  Refused for a session that is already running, that has halted, that
+  the store has no profile for, or that has no snapshot at the turn it
+  stopped on.
+  """
+  @spec resume(id) :: {:ok, pid} | {:error, :alive | :halted | :unknown | :no_resume_point}
+  def resume(id) do
+    cond do
+      halted?(id) ->
+        {:error, :halted}
+
+      whereis(id) ->
+        {:error, :alive}
+
+      true ->
+        case Tiller.State.profile(id) do
+          {:ok, profile} -> start_from(id, profile)
+          :error -> {:error, :unknown}
+        end
+    end
+  end
+
+  defp start_from(id, profile) do
+    turn = length(Tiller.State.events(id))
+
+    case Tiller.State.snapshot(id, turn) do
+      :error ->
+        {:error, :no_resume_point}
+
+      {:ok, snap} ->
+        opts = [
+          id: id,
+          # init reads the context back from the snapshot; there is no
+          # live one to hand it.
+          ctx: nil,
+          driver: profile.driver,
+          parent_id: profile.parent_id,
+          whitelist: profile.whitelist,
+          latency: profile.latency,
+          kill_at: profile.kill_at,
+          mutation: profile.mutation,
+          # The world as this run left it. A supervisor restart finds the
+          # global tool state still holding the run's effects; a VM
+          # restart does not, so the snapshot is the only copy.
+          tool_state: snap.tool_state
+        ]
+
+        DynamicSupervisor.start_child(
+          Application.fetch_env!(:tiller, :supervisor),
+          child_spec(opts)
+        )
+    end
+  end
+
+  defp halted?(id) do
+    case List.last(Tiller.State.events(id)) do
+      %Event{action: :halt} -> true
+      _ -> false
+    end
+  end
+
   @doc "Id, ancestry, mutation, turn and status of a session."
   @spec info(pid | id) :: map
   def info(pid_or_id), do: GenServer.call(target(pid_or_id), :info)
@@ -402,12 +482,27 @@ defmodule Tiller.Session do
   defp maybe_die(_s), do: :ok
 
   defp record(s, action, result, ctx) do
-    {:ok, _event} = s.state.append(s.id, s.parent_id, s.turns, action, result)
     # How a result reaches the driver: scripted drivers ignore it, a model
-    # needs it to choose the next action.
+    # needs it to choose the next action. This comes first, so the snapshot
+    # below holds the context the next turn actually starts from: snapshot
+    # the unobserved one and a resumed model loses the result it was
+    # answering.
     ctx = Driver.observe(s.driver, ctx, action, result)
+    s = %{s | ctx: ctx, turns: s.turns + 1}
+
+    # The event and the next turn's starting point go in together. Parking
+    # the snapshot covers a process that dies in the gap between turns,
+    # which is where a VM restart usually catches one; writing it with the
+    # event means a crash cannot leave the event durable with no point to
+    # resume from. The turn handler parks it again with the same values.
+    {:ok, _event} =
+      s.state.append(s.id, s.parent_id, s.turns - 1, action, result, %{
+        ctx: ctx,
+        tool_state: ToolState.snapshot()
+      })
+
     schedule_turn(s)
-    {:noreply, %{s | ctx: ctx, turns: s.turns + 1}}
+    {:noreply, s}
   end
 
   defp schedule_turn(%{latency: 0}), do: send(self(), :turn)

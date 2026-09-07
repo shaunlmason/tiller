@@ -60,6 +60,12 @@ Tiller (DynamicSupervisor)
   logging it; the supervisor restart resumes it at N (snapshots live in
   `Tiller.State`, branch tool state under `Tiller.ToolStates`) and runs the
   tool again. Log shows it once, world saw it twice.
+- **Durable store** (`Tiller.State.Log`): with `config :tiller, state_log:
+  path` every event, snapshot and session profile is appended to that file
+  and read back at start, so a trajectory outlives the VM that produced it.
+  `Tiller.resume_dead/0` then picks up the runs a restart interrupted, the
+  same way the supervisor picks up a killed branch. Off by default; dev
+  writes `tmp/tiller-state.log`.
 - **Lab** (`TillerWeb.LabLive`): three panes. Timeline of the recorded run
   on the left (click a turn to pick the fork point), that turn across every
   branch in the middle, and on the right a branch-by-turn grid ranked by
@@ -106,6 +112,9 @@ Tiller (DynamicSupervisor)
   Add `Task.async_stream` when a single turn needs fan-out.
 - `spawn_subagent` starts the child and returns; there is no `await` tool
   yet, so a parent cannot use a subagent's result within its own run.
+- The durable store is one file read whole at start, and a snapshot is
+  written per turn, so the log grows with the square of a long run's
+  context. Fine for a lab; a table when it is not.
 - `Tiller.Driver.LLM` is exercised against `Tiller.FakeMessages`, a
   scripted stand-in for `POST /v1/messages` on Bandit, so the suite needs
   no key and no network. The real API is one opt-in test

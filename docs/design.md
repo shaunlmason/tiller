@@ -293,8 +293,10 @@ the turn at which they first diverged.
 that comes with them; ranking by smallest decisive mutation. *All shipped as
 of 2026-09-06; see Resolutions above.*
 
-Deliberately out of scope entirely: real LLM drivers, persistence across
-restarts, auth, generic serialization, production styling.
+Deliberately out of scope entirely: auth, generic serialization,
+production styling. (Real LLM drivers and persistence across restarts
+were out of scope for the MVP and have since been built:
+`docs/designs/llm-driver.md` and `Tiller.State.Log`.)
 
 ## Distribution Plan
 
