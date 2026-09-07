@@ -23,6 +23,30 @@ defmodule TillerWeb.LabLiveTest do
     end
   end
 
+  test "sweep forks every mutation the run reaches, not the hand-picked few" do
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    render_click(view, "record")
+    wait_until(fn -> render(view) =~ "halt" and render(view) =~ "root.1" end)
+
+    render_click(view, "select", %{"turn" => "2"})
+    render_click(view, "sweep")
+
+    # the recorded run is put, spawn_subagent, spend, fail, get. Forked at
+    # turn 2: one control, one branch per tool still to be used (spend,
+    # fail, get), an override per replayed turn (0 and 1), a kill per turn
+    # it could still die at (2, 3, 4), and one latency.
+    assert render(view) =~ "10 branches"
+
+    wait_until(fn -> not (render(view) =~ "running") end, 200)
+    html = render(view)
+
+    assert html =~ "control"
+    assert html =~ "kill at t2"
+    assert html =~ "override t0"
+    assert html =~ "latency"
+  end
+
   test "record, pick a turn, fork, and watch the race resolve" do
     {:ok, view, html} = live(build_conn(), "/")
     assert html =~ "no run yet"

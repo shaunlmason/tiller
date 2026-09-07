@@ -71,6 +71,11 @@ Tiller (DynamicSupervisor)
   action comes from". `Tiller.FakeDriver` scripts a list of actions for
   tests/demos. A real LLM driver (grammar-constrained decode → quoted term)
   plugs in here with no other changes.
+- **Mutation** (`Tiller.Mutation`): the vocabulary of "one thing
+  different", plus `sweep/4`, which reads a recorded run and returns every
+  mutation that run reaches: one per tool it still uses after the fork
+  point, one per replayed turn, one per turn it could die at, and a
+  latency. The lab's Sweep button races all of them at once.
 - **Actions** (`Tiller.Actions`): the registry. The grammar *is* the
   capability boundary — an agent can only touch what's in its whitelist.
   Subagents get a smaller whitelist and can't spawn (depth limit).
