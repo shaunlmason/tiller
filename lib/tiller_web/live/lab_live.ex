@@ -28,15 +28,21 @@ defmodule TillerWeb.LabLive do
      )}
   end
 
+  # How many control branches a race carries. They change nothing, so what
+  # they do anyway is the noise floor every mutation is judged against;
+  # with a model deciding each turn, one control cannot tell drift from
+  # effect. See `Tiller.Race`.
+  @controls 3
+
   # Presets: one thing different per branch. nil is the control.
   defp presets(fork_turn) do
-    [
-      nil,
-      {:whitelist, Actions.root_whitelist() -- [{:spend, 1}, {:get, 1}]},
-      {:driver, FakeDriver, FakeDriver.context([Tiller.Driver.action(:echo, ["elsewhere"])])},
-      {:latency, 60},
-      {:kill_at, fork_turn}
-    ] ++
+    List.duplicate(nil, @controls) ++
+      [
+        {:whitelist, Actions.root_whitelist() -- [{:spend, 1}, {:get, 1}]},
+        {:driver, FakeDriver, FakeDriver.context([Tiller.Driver.action(:echo, ["elsewhere"])])},
+        {:latency, 60},
+        {:kill_at, fork_turn}
+      ] ++
       if fork_turn > 0, do: [{:result_override, 0, {:error, :disk_full}}], else: []
   end
 
@@ -73,7 +79,9 @@ defmodule TillerWeb.LabLive do
   def handle_event("sweep", _params, %{assigns: %{selected: turn}} = socket)
       when is_integer(turn) do
     mutations =
-      Mutation.sweep(root_events(socket.assigns.events), Actions.root_whitelist(), turn)
+      Mutation.sweep(root_events(socket.assigns.events), Actions.root_whitelist(), turn,
+        controls: @controls
+      )
 
     {:noreply, race(socket, turn, mutations)}
   end
@@ -174,6 +182,23 @@ defmodule TillerWeb.LabLive do
   defp compare_class(_, nil), do: ""
   defp compare_class(a, b), do: if(Event.key(a) == Event.key(b), do: "same", else: "diff")
 
+  # One sentence, built here rather than in the template, so it reads the
+  # same on the page as it does in a test.
+  defp band_text(%{controls: 0}), do: "control band: no control has finished yet"
+
+  defp band_text(%{controls: n, distance: d, decisive: k}) do
+    "control band: #{n} #{plural(n, "control")} changed nothing and drifted " <>
+      "#{d} #{plural(d, "turn")}" <>
+      if k > 0 do
+        " · #{k} of them ended somewhere else, so an outcome alone proves little here"
+      else
+        " · a mutation must beat that to earn the star"
+      end
+  end
+
+  defp plural(1, word), do: word
+  defp plural(_, word), do: word <> "s"
+
   defp pair_text(nil), do: "nothing"
   defp pair_text(%Event{} = e), do: action_text(e.action) <> " " <> result_text(e.result)
 
@@ -186,7 +211,9 @@ defmodule TillerWeb.LabLive do
       |> Race.rank(assigns.branches)
       |> Enum.map(&%{&1 | decisive: &1.decisive and not is_nil(&1.verdict)})
 
-    smallest = Race.smallest_decisive(root, Enum.filter(assigns.branches, & &1.verdict))
+    finished = Enum.filter(assigns.branches, & &1.verdict)
+    smallest = Race.smallest_decisive(root, finished)
+    floor = Race.noise_floor(root, finished)
     columns = Enum.max([length(root) | Enum.map(ranked, &length(&1.events))], fn -> 0 end)
 
     assigns =
@@ -195,6 +222,7 @@ defmodule TillerWeb.LabLive do
         total: length(root),
         ranked: ranked,
         smallest: smallest && smallest.id,
+        floor: floor,
         columns: columns,
         picked_branch: Enum.find(ranked, &(&1.id == assigns.picked))
       )
@@ -268,8 +296,11 @@ defmodule TillerWeb.LabLive do
       </section>
 
       <section id="race">
-        <h2>Race · decisive first, smallest effect first</h2>
+        <h2>Race · past the control band first, then smallest effect</h2>
         <p :if={@branches == []} class="dim">Fork to start a race.</p>
+        <p :if={@branches != []} class={"band #{if @floor.decisive > 0, do: "err"}"}>
+          {band_text(@floor)}
+        </p>
         <table :if={@branches != []} class="grid" id="grid">
           <thead>
             <tr>
@@ -284,10 +315,15 @@ defmodule TillerWeb.LabLive do
             <tr
               :for={b <- @ranked}
               id={"branch-#{b.id}"}
-              class={"#{if b.id == @picked, do: "picked"} #{if b.id == @smallest, do: "smallest"}"}
+              class={"#{if b.id == @picked, do: "picked"} #{if b.id == @smallest, do: "smallest"} #{if is_nil(b.mutation), do: "control"} #{if b.decisive and not b.beyond_noise and not is_nil(b.mutation), do: "in-band"}"}
             >
               <td class="bid" phx-click="pick" phx-value-id={b.id}>
-                <span :if={b.id == @smallest} title="smallest decisive mutation">★</span> {b.id}
+                <span :if={b.id == @smallest} title="smallest mutation past the control band">★</span>
+                <span
+                  :if={b.decisive and not b.beyond_noise and not is_nil(b.mutation)}
+                  title="ended elsewhere, but no further than a control drifted"
+                >≈</span>
+                {b.id}
               </td>
               <td
                 :for={t <- 0..(@columns - 1)//1}
