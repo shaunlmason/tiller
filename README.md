@@ -81,6 +81,12 @@ Tiller (DynamicSupervisor)
   what a script never needed: `observe/3` hands a result back to the
   driver, and `override/3` lets a driver whose context embeds past results
   rewrite the one a `result_override` fork changed.
+- **Mutation** (`Tiller.Mutation`): the vocabulary of "one thing
+  different", plus `sweep/4`, which reads a recorded run and returns every
+  mutation that run reaches: one per tool it still uses after the fork
+  point, one per replayed turn, one per turn it could die at, and a
+  latency, capped (24 by default) by taking from each axis in turn so no
+  axis is starved. The lab's Sweep button races the result.
 - **Actions** (`Tiller.Actions`): the registry. The grammar *is* the
   capability boundary — an agent can only touch what's in its whitelist.
   Subagents get a smaller whitelist and can't spawn (depth limit).

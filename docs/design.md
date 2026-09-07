@@ -264,6 +264,15 @@ building rather than watching. Chosen against the recommendation (C), knowingly.
    one cell per turn coloured same, different, extra or missing. Rows are
    ranked per (3), the smallest decisive mutation is starred, clicking a
    cell selects that turn, clicking an id shows that branch's card.
+   *Amended 2026-09-07:* the grid holds a wide race without changing
+   shape, so `Tiller.Mutation.sweep/4` generates one instead of relying on
+   hand-picked presets: a branch per tool the run still uses after the
+   fork point, per replayed turn, per turn it could die at, plus latency
+   and a control, capped at 24 by taking from each axis in turn: a long
+   run reaches many points on every axis and each branch costs a row of
+   cells, so an uncapped sweep grows with the square of the run. Ten
+   branches on the demo run rank without crowding, so no separate summary
+   view is needed.
 5. **Resume, and show the hazard.** Because snapshots live in the store, a
    restarted session resumes at the turn that was in flight with the same
    id and turn counter, and a branch's tool state (under
