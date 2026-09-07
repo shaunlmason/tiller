@@ -5,6 +5,11 @@ defmodule Tiller.DecisionsTest do
   That makes them the most conflict-prone files in the repo, and nothing
   else here would notice if a merge left markers behind or dropped an
   entry: this suite is what noticed, the once it happened.
+
+  The marker and parse checks sweep every machine-readable file under
+  docs/, not just the two decision files, because the property that got
+  us is shared by all of them: appended to on every branch, read by
+  nothing, so a bad merge is invisible until someone opens the file.
   """
   use ExUnit.Case, async: true
 
@@ -13,10 +18,39 @@ defmodule Tiller.DecisionsTest do
 
   defp read!(path), do: File.read!(Path.join(File.cwd!(), path))
 
-  test "neither decision file carries a conflict marker" do
-    for path <- [@jsonl, @active], line <- String.split(read!(path), "\n") do
+  defp machine_readable_docs do
+    cwd = File.cwd!()
+
+    ["docs/*.json", "docs/*.jsonl"]
+    |> Enum.flat_map(&Path.wildcard(Path.join(cwd, &1)))
+    |> Enum.map(&Path.relative_to(&1, cwd))
+    |> Enum.sort()
+  end
+
+  test "no machine-readable doc carries a conflict marker" do
+    paths = machine_readable_docs()
+    assert @jsonl in paths and @active in paths
+
+    for path <- paths, line <- String.split(read!(path), "\n") do
       refute String.starts_with?(line, ["<<<<<<<", "=======", ">>>>>>>"]),
              "#{path} still has a merge conflict in it: #{line}"
+    end
+  end
+
+  test "every machine-readable doc parses" do
+    for path <- machine_readable_docs() do
+      contents = read!(path)
+
+      decoded =
+        case Path.extname(path) do
+          ".jsonl" -> Enum.map(String.split(contents, "\n", trim: true), &JSON.decode/1)
+          ".json" -> [JSON.decode(contents)]
+        end
+
+      for {result, i} <- Enum.with_index(decoded, 1) do
+        assert match?({:ok, _}, result),
+               "#{path} does not parse (entry #{i}): #{inspect(result)}"
+      end
     end
   end
 
