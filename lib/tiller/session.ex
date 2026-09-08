@@ -23,7 +23,8 @@ defmodule Tiller.Session do
   process is observable (and mutable) between turns. A turn parks a
   snapshot of the driver context and tool state in `Tiller.State`, asks the
   driver for the next action, evaluates it against the whitelist, appends
-  an attributed `Tiller.Event`, and schedules the next turn until `:halt`.
+  an attributed `Tiller.Event` (with the driver's reason for the action,
+  when it has one), and schedules the next turn until `:halt`.
   A tool that crashes becomes data in the log; the driver decides what to
   do with it. `await/2` blocks the caller until the session halts.
 
@@ -486,6 +487,11 @@ defmodule Tiller.Session do
   defp maybe_die(_s), do: :ok
 
   defp record(s, action, result, ctx) do
+    # Asked before observe/3, which is about the next turn: this is why
+    # the driver chose the action being recorded, and a driver that reads
+    # a script has nothing to say.
+    rationale = Driver.rationale(s.driver, ctx)
+
     # How a result reaches the driver: scripted drivers ignore it, a model
     # needs it to choose the next action. This comes first, so the snapshot
     # below holds the context the next turn actually starts from: snapshot
@@ -501,8 +507,8 @@ defmodule Tiller.Session do
     # resume from. The turn handler parks it again with the same values.
     {:ok, _event} =
       s.state.append(s.id, s.parent_id, s.turns - 1, action, result, %{
-        ctx: ctx,
-        tool_state: ToolState.snapshot()
+        rationale: rationale,
+        snapshot: %{ctx: ctx, tool_state: ToolState.snapshot()}
       })
 
     schedule_turn(s)

@@ -2,8 +2,14 @@ defmodule TillerWeb.LabLive do
   @moduledoc """
   The butterfly lab, three panes: recorded timeline on the left (click a
   turn to pick the fork point), that turn across every branch in the
-  middle, and the race on the right as a branch-by-turn grid, ranked by
-  `Tiller.Race`, with a card for the picked branch.
+  middle with the reasoning behind each, and the race on the right as a
+  branch-by-turn grid, ranked by `Tiller.Race`, with a card for the
+  picked branch.
+
+  The middle pane is where a mutation stops being a number: the same
+  turn, the original's reason for it, and each branch's reason for
+  whatever it did instead. A scripted driver has none and the pane says
+  so once, rather than leaving a row of empty boxes.
 
   Everything on screen arrives through `Tiller.State.subscribe(:all)`;
   nothing is polled.
@@ -240,6 +246,12 @@ defmodule TillerWeb.LabLive do
   defp plural(1, singular, _plural), do: singular
   defp plural(_, _singular, plural), do: plural
 
+  # Why the driver chose a turn, when it can say. A scripted run has no
+  # reasoning to show, and inventing a line for it would be worse than
+  # the blank.
+  defp why(nil), do: nil
+  defp why(%Event{} = e), do: Event.rationale(e)
+
   defp pair_text(nil), do: "nothing"
   defp pair_text(%Event{} = e), do: action_text(e.action) <> " " <> result_text(e.result)
 
@@ -261,6 +273,9 @@ defmodule TillerWeb.LabLive do
       assign(assigns,
         root: root,
         total: length(root),
+        # How much reasoning this run recorded at all: what separates a
+        # model run from a scripted one, in one number.
+        reasoned: Enum.count(root, &Event.rationale/1),
         ranked: ranked,
         smallest: smallest && smallest.id,
         floor: floor,
@@ -329,6 +344,7 @@ defmodule TillerWeb.LabLive do
             <h3><span>root</span><span class="tag">original</span></h3>
             <pre :if={orig}>{action_text(orig.action)}
     <span class={result_class(orig.result)}>{result_text(orig.result)}</span></pre>
+            <p :if={why(orig)} class="why">{why(orig)}</p>
           </div>
           <div
             :for={b <- @ranked}
@@ -338,8 +354,13 @@ defmodule TillerWeb.LabLive do
             <% ev = Enum.at(b.events, @selected) %>
             <pre :if={ev}>{action_text(ev.action)}
     <span class={result_class(ev.result)}>{result_text(ev.result)}</span></pre>
+            <p :if={why(ev)} class="why">{why(ev)}</p>
             <span :if={is_nil(ev)} class="dim">no event at this turn yet</span>
           </div>
+          <p :if={@reasoned == 0} class="dim">
+            This run kept no reasoning: a scripted driver has none to give. Record a model run
+            to see why each turn was chosen.
+          </p>
         <% end %>
       </section>
 

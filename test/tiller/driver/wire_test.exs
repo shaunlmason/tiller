@@ -35,6 +35,27 @@ defmodule Tiller.Driver.LLM.WireTest do
     end
   end
 
+  describe "thinking/1" do
+    test "summarized thinking blocks join into the reason for the turn" do
+      content = [
+        %{"type" => "thinking", "thinking" => "The budget is 10 and I have spent none."},
+        %{"type" => "thinking", "thinking" => "Spending 4 leaves room for the rest."},
+        %{"type" => "tool_use", "id" => "t0", "name" => "spend", "input" => %{"amount" => 4}}
+      ]
+
+      assert Wire.thinking(content) ==
+               "The budget is 10 and I have spent none.\nSpending 4 leaves room for the rest."
+    end
+
+    test "a block with no text is nothing, not a blank reason" do
+      # what `display: "omitted"` returns: the block, without its text
+      assert Wire.thinking([%{"type" => "thinking", "thinking" => ""}]) == nil
+      assert Wire.thinking([%{"type" => "thinking"}]) == nil
+      assert Wire.thinking([%{"type" => "text", "text" => "hello"}]) == nil
+      assert Wire.thinking([]) == nil
+    end
+  end
+
   describe "decode/1" do
     test "a tool_use decodes to a quoted term with args in schema order" do
       body = %{

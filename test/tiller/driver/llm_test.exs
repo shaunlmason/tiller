@@ -292,6 +292,107 @@ defmodule Tiller.Driver.LLMTest do
     end
   end
 
+  describe "the reason for a turn" do
+    test "the request asks for the summary, and the answer lands on the event" do
+      api =
+        start_api([
+          FakeMessages.tool_use("put", %{"key" => "k", "value" => 1},
+            thinking: "Storing first: the read at the end has nothing to find until it has."
+          ),
+          # a response with no thinking at all: some turns simply have none
+          FakeMessages.tool_use("get", %{"key" => "k"}),
+          FakeMessages.done("stored and read back", thinking: "Both steps are in the log.")
+        ])
+
+      {_pid, events} = run(api, "Store a key, read it back, then finish.", id: "why")
+
+      # Asked for explicitly: the default is `omitted`, whose thinking
+      # blocks come back with empty text.
+      for request <- FakeMessages.requests(api) do
+        assert request["thinking"] == %{"type" => "adaptive", "display" => "summarized"}
+      end
+
+      assert [put, get, done, _halt] = events
+      assert Event.rationale(put) =~ "Storing first"
+      assert Event.rationale(get) == nil
+      assert Event.rationale(done) =~ "Both steps"
+    end
+
+    test "a driver told not to ask does not, and its events carry no reason" do
+      api =
+        start_api([
+          FakeMessages.done("finished", thinking: nil)
+        ])
+
+      {_pid, events} = run(api, "Finish.", id: "quiet", display: :omitted)
+
+      assert [request] = FakeMessages.requests(api)
+      assert request["thinking"]["display"] == "omitted"
+      assert [done, _halt] = events
+      assert Event.rationale(done) == nil
+    end
+
+    test "a branch replays the source's reasons and gives its own past the fork point" do
+      api = start_api(&answer/1)
+
+      ctx = LLM.context("Store a key, read it back, then finish.", base_url: api.base_url)
+      {:ok, pid} = Session.start_link(driver: LLM, ctx: ctx, id: "orig-why")
+      Session.run(pid)
+      assert {:halted, _} = Session.await("orig-why", 15_000)
+
+      original = State.events("orig-why")
+
+      {:ok, branch} = Session.fork("orig-why", 2, nil)
+      {:ok, id} = Session.id_of(branch)
+      Session.run(branch)
+      assert {:halted, _} = Session.await(id, 15_000)
+
+      branch_events = State.events(id)
+
+      # The replayed prefix reads the way the source's did: those turns
+      # were not decided again, and reporting the fork point's reasoning
+      # for them would attribute it to a turn that happened before it.
+      for turn <- 0..1 do
+        assert Event.rationale(Enum.at(branch_events, turn)) ==
+                 Event.rationale(Enum.at(original, turn))
+
+        assert Event.rationale(Enum.at(branch_events, turn)) != nil
+      end
+
+      # Its own turns are its own: it asked the API for them.
+      assert Event.rationale(Enum.at(branch_events, 2)) != nil
+    end
+
+    test "a scripted driver records no reason rather than an invented one" do
+      ctx = FakeDriver.context([Driver.action(:echo, ["hi"])])
+      {:ok, pid} = Session.start_link(driver: FakeDriver, ctx: ctx, id: "no-why")
+      Session.run(pid)
+      assert {:halted, 1} = Session.await(pid)
+      assert [echo, _halt] = State.events("no-why")
+      assert Event.rationale(echo) == nil
+    end
+  end
+
+  # A stand-in model for the fork test: answers from what the conversation
+  # has already done, so the branch's own turns get coherent answers too.
+  defp answer(request) do
+    called =
+      for %{"role" => "assistant", "content" => blocks} <- Map.get(request, "messages", []),
+          %{"type" => "tool_use", "name" => name} <- List.wrap(blocks),
+          do: name
+
+    cond do
+      "put" not in called ->
+        FakeMessages.tool_use("put", %{"key" => "k", "value" => 1}, thinking: "Store it first.")
+
+      "get" not in called ->
+        FakeMessages.tool_use("get", %{"key" => "k"}, thinking: "Now read it back.")
+
+      true ->
+        FakeMessages.done("stored and read back", thinking: "Nothing is left to do.")
+    end
+  end
+
   test "usage is reported through the session, and a fork pays only past its fork point" do
     {:ok, api} =
       FakeMessages.start([

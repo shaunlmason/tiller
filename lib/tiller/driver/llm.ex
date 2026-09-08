@@ -23,6 +23,13 @@ defmodule Tiller.Driver.LLM do
       snapshot the session parks before every turn. Nothing has to
       rebuild a conversation from events.
 
+  The request asks for summarized thinking, so each event can carry why
+  the model chose it. The raw chain of thought is never returned by the
+  API; the summary is, and only when asked (`display` defaults to
+  `omitted`, whose thinking blocks arrive with empty text). Blocks are
+  echoed back unchanged with the rest of the assistant turn, which is
+  what the API requires of a conversation continuing on the same model.
+
   A run ends by calling `done/1`, so the final answer is an action
   `Tiller.Race` can compare two runs on. A reply with no tool call is
   treated as `done(text)`. Refusals, exhausted caps and API failures end
@@ -58,6 +65,8 @@ defmodule Tiller.Driver.LLM do
           whitelist: [{atom, arity}],
           messages: [map],
           effort: atom | nil,
+          display: :summarized | :omitted,
+          rationale: String.t() | nil,
           max_turns: pos_integer,
           max_input_tokens: pos_integer,
           turn: non_neg_integer,
@@ -71,9 +80,10 @@ defmodule Tiller.Driver.LLM do
   A context for `goal`.
 
   Options: `:whitelist` (what to offer, default the root whitelist),
-  `:model`, `:system`, `:effort` (default `:low`), `:max_turns`,
-  `:max_input_tokens`, `:base_url` (default the public API), `:api_key`
-  (default `ANTHROPIC_API_KEY`), `:timeout`.
+  `:model`, `:system`, `:effort` (default `:low`), `:display`
+  (`:summarized` by default, `:omitted` to stop asking for the
+  reasoning), `:max_turns`, `:max_input_tokens`, `:base_url` (default the
+  public API), `:api_key` (default `ANTHROPIC_API_KEY`), `:timeout`.
   """
   @spec context(String.t(), keyword) :: t
   def context(goal, opts \\ []) do
@@ -87,6 +97,9 @@ defmodule Tiller.Driver.LLM do
       whitelist: whitelist,
       messages: [%{"role" => "user", "content" => goal}],
       effort: Keyword.get(opts, :effort, :low),
+      display: Keyword.get(opts, :display, :summarized),
+      # the reasoning behind the action last returned, for the log
+      rationale: nil,
       max_turns: Keyword.get(opts, :max_turns, @default_max_turns),
       max_input_tokens: Keyword.get(opts, :max_input_tokens, @default_max_input_tokens),
       turn: 0,
@@ -118,6 +131,20 @@ defmodule Tiller.Driver.LLM do
     end
   end
 
+  @doc "What this run has spent so far, input and output tokens."
+  @impl true
+  def usage(%{usage: usage}), do: usage
+
+  @doc """
+  The summarized thinking behind the action just decided.
+
+  `nil` when the model returned none: a response can carry no thinking
+  block at all, and one asked for with `display: :omitted` carries a
+  block with no text.
+  """
+  @impl true
+  def rationale(ctx), do: Map.get(ctx, :rationale)
+
   @doc """
   How a result reaches the model: the answer to the call it just made.
 
@@ -125,9 +152,6 @@ defmodule Tiller.Driver.LLM do
   appends only the matching `tool_result`. With no call outstanding (the
   synthesized `done` of a text-only reply) there is nothing to answer.
   """
-  @impl true
-  def usage(%{usage: usage}), do: usage
-
   @impl true
   def observe(%{pending: nil} = ctx, _action, _result), do: ctx
 
@@ -202,6 +226,9 @@ defmodule Tiller.Driver.LLM do
   defp decide(ctx, body) do
     ctx = count(ctx, body)
     content = Map.get(body, "content") || []
+    # Read before the branch below, so a halt does not carry the last
+    # turn's reasoning forward as if it explained this one.
+    ctx = %{ctx | rationale: Wire.thinking(content)}
 
     case Wire.decode(body) do
       {:tool_use, id, action} ->
@@ -251,6 +278,9 @@ defmodule Tiller.Driver.LLM do
       "tools" => Wire.tools(Tiller.Session.current_whitelist() || ctx.whitelist),
       # one action per turn is what the session's loop expects
       "tool_choice" => %{"type" => "auto", "disable_parallel_tool_use" => true},
+      # Adaptive is the only mode this model takes, and `display` is what
+      # decides whether the thinking blocks it returns carry any text.
+      "thinking" => %{"type" => "adaptive", "display" => to_string(ctx.display || :omitted)},
       "messages" => ctx.messages
     }
 

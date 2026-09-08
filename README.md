@@ -62,6 +62,13 @@ Tiller (DynamicSupervisor)
   log, not re-requested, and the tally it inherits at the fork point is the
   source's bill, not its own. A scripted driver reports nothing rather than
   a zero it did not earn.
+- **Reason** (`Tiller.Event.rationale/1`): the driver asks for summarized
+  thinking and the session stores what comes back on the turn it explains,
+  so the middle pane shows the original's reason for a turn beside each
+  branch's reason for what it did instead. It is outside `Tiller.Event.key/1`
+  on purpose: two branches that reasoned differently and acted the same are
+  the same trajectory. A scripted driver reports none, and the pane says so
+  once rather than showing empty boxes.
 - **Control band** (`Tiller.Race.noise_floor/2`): with a model deciding each
   turn, everything after the fork point is a fresh sample, so two branches
   that changed nothing can still diverge. A race carries several control
@@ -80,20 +87,21 @@ Tiller (DynamicSupervisor)
   writes `tmp/tiller-state.log`.
 - **Lab** (`TillerWeb.LabLive`): three panes. Timeline of the recorded run
   on the left (click a turn to pick the fork point), that turn across every
-  branch in the middle, and on the right a branch-by-turn grid ranked by
-  `Tiller.Race`, the control band it measured, and the smallest mutation
-  past that band starred. Fed entirely by
-  `Tiller.State.subscribe/1`; nothing polls.
+  branch in the middle with the reasoning behind each, and on the right a
+  branch-by-turn grid ranked by `Tiller.Race`, the control band it
+  measured, and the smallest mutation past that band starred. Fed entirely
+  by `Tiller.State.subscribe/1`; nothing polls.
   Phoenix is the only reason the project is no longer dependency-free, and
   it stays out of `lib/tiller`.
 - **Driver** (`Tiller.Driver` behaviour): the only seam for "where the next
   action comes from". `Tiller.FakeDriver` scripts a list of actions for
   tests/demos. `Tiller.Driver.LLM` is the real one: the session's whitelist
   becomes the model's tool surface, a `tool_use` block becomes the quoted
-  term, and a run ends by calling `done/1`. Two optional callbacks carry
+  term, and a run ends by calling `done/1`. Three optional callbacks carry
   what a script never needed: `observe/3` hands a result back to the
-  driver, and `override/3` lets a driver whose context embeds past results
-  rewrite the one a `result_override` fork changed.
+  driver, `override/3` lets a driver whose context embeds past results
+  rewrite the one a `result_override` fork changed, and `rationale/1`
+  answers why the turn just decided was decided.
 - **Mutation** (`Tiller.Mutation`): the vocabulary of "one thing
   different", plus `sweep/4`, which reads a recorded run and returns every
   mutation that run reaches: one per tool it still uses after the fork
@@ -132,9 +140,15 @@ Tiller (DynamicSupervisor)
   scripted stand-in for `POST /v1/messages` on Bandit, so the suite needs
   no key and no network. The real API is one opt-in test
   (`TILLER_ANTHROPIC_API_KEY=... mix test --include integration`).
-- The lab does not yet show a control band or per-branch token cost, so a
-  branch that differs only because the model sampled differently reads the
-  same as one the mutation changed (`docs/designs/llm-driver.md`, step 6).
+- A turn's reason is the model's own summary, not its raw reasoning: the
+  API never returns that. It is also the only thing on an event that no
+  fake API can prove, so the live test is what checks that asking for it
+  returns anything at all.
+- A `result_override` fork strips the thinking blocks after the edited
+  turn out of the branch's conversation, because editing a turn
+  invalidates them on the API, so that branch plans without the reasoning
+  it had. The log keeps the recorded reasons and the pane still shows
+  them: the one place the screen says more than the model saw.
 
 ## Research
 

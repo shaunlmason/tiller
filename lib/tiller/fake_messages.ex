@@ -20,6 +20,12 @@ defmodule Tiller.FakeMessages do
   A script is a list of responses, taken in order, or a function of the
   request, which is how a test says "when `spend` is refused, answer with
   `get`". A list that runs out answers with a plain end-of-turn.
+
+  Responses can carry a `thinking:` summary, the way a real one does when
+  the request asked for `display: "summarized"`. This stand-in does not
+  read the setting to decide: a test scripts the response it wants to
+  test against, and the request validation is what keeps the setting
+  itself honest.
   """
   @behaviour Plug
 
@@ -74,16 +80,34 @@ defmodule Tiller.FakeMessages do
 
   ## response builders
 
-  @doc "A response that calls one tool."
+  @doc """
+  A response that calls one tool.
+
+  Options: `:text` for a text block before the call, `:thinking` for the
+  summarized reasoning a real response carries when the request asked
+  for it, `:id` for the `tool_use` id, and the two token counts.
+  """
   def tool_use(name, input, opts \\ []) do
     text = Keyword.get(opts, :text)
     id = Keyword.get(opts, :id, "toolu_" <> Integer.to_string(System.unique_integer([:positive])))
 
     blocks =
-      if(text, do: [%{"type" => "text", "text" => text}], else: []) ++
+      thinking_blocks(opts) ++
+        if(text, do: [%{"type" => "text", "text" => text}], else: []) ++
         [%{"type" => "tool_use", "id" => id, "name" => name, "input" => input}]
 
     %{"stop_reason" => "tool_use", "content" => blocks, "usage" => usage(opts)}
+  end
+
+  # A thinking block comes back whether or not its text does: the display
+  # setting decides the text, never the block. Scripting the empty one is
+  # how a test says "the driver did not ask for the summary".
+  defp thinking_blocks(opts) do
+    case Keyword.fetch(opts, :thinking) do
+      :error -> []
+      {:ok, nil} -> [%{"type" => "thinking", "thinking" => "", "signature" => "sig"}]
+      {:ok, text} -> [%{"type" => "thinking", "thinking" => text, "signature" => "sig"}]
+    end
   end
 
   @doc "A response that calls `done`, the way a run is meant to end."
@@ -93,7 +117,7 @@ defmodule Tiller.FakeMessages do
   def text(text, opts \\ []) do
     %{
       "stop_reason" => "end_turn",
-      "content" => [%{"type" => "text", "text" => text}],
+      "content" => thinking_blocks(opts) ++ [%{"type" => "text", "text" => text}],
       "usage" => usage(opts)
     }
   end
@@ -171,10 +195,24 @@ defmodule Tiller.FakeMessages do
       unknown = Enum.find(request["tools"], &(not known?(&1["name"]))) ->
         {:error, "tool #{unknown["name"]} has no schema"}
 
+      # What the model this driver targets accepts: adaptive or nothing.
+      # A fixed budget is a 400 there, so it is a 400 here.
+      not valid_thinking?(request["thinking"]) ->
+        {:error, "thinking must be adaptive; budget_tokens is rejected on this model"}
+
       true ->
         :ok
     end
   end
+
+  defp valid_thinking?(nil), do: true
+
+  defp valid_thinking?(%{"type" => "adaptive"} = thinking) do
+    Map.get(thinking, "display", "omitted") in ["omitted", "summarized"] and
+      not Map.has_key?(thinking, "budget_tokens")
+  end
+
+  defp valid_thinking?(_other), do: false
 
   defp known?(name) do
     Enum.any?(Tiller.Tools.Schema.callable(), fn {f, _a} -> to_string(f) == name end)
