@@ -43,7 +43,8 @@ defmodule Tiller.Demo do
   stand-in for the Messages API, so it needs no credential and costs
   nothing, and against the real API when one is configured. This is the
   run that makes the model-only parts of the lab visible: token cost per
-  branch, and a control band that can actually be non-zero.
+  branch, a control band that can actually be non-zero, and a reason
+  under every turn.
 
   Options: `:base_url` and `:api_key` to point at the real API instead.
   Returns `{pid, api}`, where `api` is `nil` when it went to the network.
@@ -82,17 +83,28 @@ defmodule Tiller.Demo do
         Tiller.FakeMessages.tool_use(
           "put",
           %{"key" => "greeting", "value" => "hello from a model"},
-          text: "Storing it first."
+          text: "Storing it first.",
+          thinking:
+            "The goal names three steps. Storing comes first: the read at the end has " <>
+              "nothing to find until it has happened."
         )
 
       "spend" not in called ->
-        Tiller.FakeMessages.tool_use("spend", %{"amount" => 4})
+        Tiller.FakeMessages.tool_use("spend", %{"amount" => 4},
+          thinking:
+            "The greeting is stored. Spending is the only step left that can fail, so " <>
+              "it goes before the read."
+        )
 
       "get" not in called ->
-        Tiller.FakeMessages.tool_use("get", %{"key" => "greeting"})
+        Tiller.FakeMessages.tool_use("get", %{"key" => "greeting"},
+          thinking: "Reading the key back is what shows the store kept what I put in it."
+        )
 
       true ->
-        Tiller.FakeMessages.done("stored the greeting, spent 4, read it back")
+        Tiller.FakeMessages.done("stored the greeting, spent 4, read it back",
+          thinking: "All three steps are in the log with the results I expected. Nothing is left."
+        )
     end
   end
 

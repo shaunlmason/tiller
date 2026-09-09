@@ -33,6 +33,7 @@ defmodule Tiller.Driver.Replay do
           delegate: module,
           delegate_ctx: term,
           baseline: %{input: non_neg_integer, output: non_neg_integer} | nil,
+          rationale: binary | nil,
           turn: non_neg_integer
         }
 
@@ -67,18 +68,26 @@ defmodule Tiller.Driver.Replay do
       # false while the prefix is being replayed: those turns are already
       # in the delegate's context, which came from the fork-turn snapshot,
       # so observing them again would double-count them.
-      delegating: false
+      delegating: false,
+      # the recorded reason for the prefix turn being replayed, so a
+      # branch's prefix reads the way the source's did
+      rationale: nil
     }
   end
 
+  # `rationale` and `delegating` are put rather than struct-updated: a
+  # branch resumed from a snapshot taken by an older build has a context
+  # without them, and a field added here must not be what stops it.
   @impl true
   def next_action(%{prefix: [event | rest], turn: turn} = ctx) do
     result = Map.get(ctx.overrides, turn, event.result)
-    {:replay, event.action, result, %{ctx | prefix: rest, turn: turn + 1}}
+    ctx = %{ctx | prefix: rest, turn: turn + 1}
+
+    {:replay, event.action, result, Map.put(ctx, :rationale, Event.rationale(event))}
   end
 
   def next_action(%{prefix: [], delegate: delegate, delegate_ctx: dctx} = ctx) do
-    ctx = %{ctx | delegating: true}
+    ctx = ctx |> Map.put(:delegating, true) |> Map.put(:rationale, nil)
 
     case delegate.next_action(dctx) do
       :halt -> :halt
@@ -122,6 +131,22 @@ defmodule Tiller.Driver.Replay do
       {now, base} -> %{input: now.input - base.input, output: now.output - base.output}
     end
   end
+
+  @doc """
+  Why the turn just returned was chosen: the delegate's reason once the
+  branch is deciding for itself, and the recorded one while the prefix
+  is being replayed.
+
+  A replayed turn was not decided again, so reporting the delegate's
+  current reasoning for it would attribute the fork point's thinking to
+  a turn that happened before it. The recorded reason is the true one,
+  and it is what makes a branch's prefix read like its source's.
+  """
+  @impl true
+  def rationale(%{delegating: true, delegate: d, delegate_ctx: dctx}),
+    do: Tiller.Driver.rationale(d, dctx)
+
+  def rationale(ctx), do: Map.get(ctx, :rationale)
 
   @impl true
   def override(ctx, turn, result) do

@@ -252,9 +252,13 @@ Thinking is omitted (adaptive by default on this model).
    state, so a fork's replayed prefix does not put the engine back where
    it was. The honest version runs each branch against its own
    instantiated repo, which is a fixture question, not a driver one.
-4. **Thinking display.** Omitted in v1. `display: "summarized"` would let
-   the turn-detail pane show why the model chose an action, which is the
-   inspector's natural next feature.
+4. **Thinking display.** Resolved (2026-09-08): the request asks for
+   `thinking: {type: "adaptive", display: "summarized"}`, the driver
+   answers `rationale/1` with what came back, and the session stores it
+   on the event, so the turn-detail pane shows why each branch chose what
+   it chose. See "What shipped" below. What is still open is the raw
+   chain of thought, which the API never returns on this model: the
+   summary is the most an inspector can show.
 5. **Determinism knobs.** No sampling parameters exist on this model, so
    the noise floor is the only handle. Whether three controls are enough
    is an empirical question for the first real-key run.
@@ -314,9 +318,50 @@ own claim ("a whitelist mutation is literally a different `tools`
 array") requires, and a test asserts the branch plans without the tool
 rather than being refused after choosing it.
 
-**Not built:** step 6, the control band and per-branch cost in the lab.
-Until it lands, the lab cannot separate a branch the mutation changed
-from one the model merely sampled differently.
+**Not built at the time:** step 6, the control band and per-branch cost
+in the lab. Both landed since (`Tiller.Race.noise_floor/2` and
+`Tiller.Driver.usage/1`), so the lab does separate a branch the mutation
+changed from one the model merely sampled differently.
+
+## What shipped (2026-09-08): the reason for a turn
+
+Open Question 4, and the last of the stretch list that does not need
+another task or another repo.
+
+- **The request asks.** `thinking: {type: "adaptive", display:
+  "summarized"}` goes on every request, configurable per context
+  (`display: :omitted` to stop asking). The default returns thinking
+  blocks whose text is empty, so without this the pane would render
+  headings with nothing under them. Adaptive is the only mode this model
+  takes; `Tiller.FakeMessages` rejects anything else, `budget_tokens`
+  included, the way the API does.
+- **The driver answers.** `Tiller.Driver` gained `rationale/1`, optional
+  like `usage/1`: `Tiller.Driver.LLM` returns the summary of the
+  response it just decided from, and a scripted driver exports nothing
+  rather than inventing a line. `Tiller.Driver.LLM.Wire.thinking/1` is
+  the pure half, and an empty join is `nil`, not a blank.
+- **The event carries it.** `Tiller.Event` gained `rationale`, written by
+  `Tiller.State.append/6` from the session's `extra` map alongside the
+  snapshot. It is deliberately outside `Tiller.Event.key/1`: two branches
+  that reasoned differently and acted the same are the same trajectory,
+  and divergence must not move because a sampler chose different words.
+  `Event.rationale/1` reads it through `Map.get/2`, so an event from a
+  log written before the field existed comes back as `nil` rather than
+  raising.
+- **A replayed turn keeps its own reason.** `Tiller.Driver.Replay`
+  reports the recorded event's rationale while the prefix replays and
+  the delegate's once the branch is deciding for itself. Reporting the
+  delegate's for a replayed turn would attribute the fork point's
+  thinking to a turn that happened before it.
+- **The pane shows it.** The middle pane puts the original's reason for
+  the selected turn beside each branch's reason for whatever it did
+  instead. A scripted run says so once ("this run kept no reasoning")
+  instead of showing a column of empty boxes, and `Tiller.Demo`'s
+  stand-in model carries a summary per turn so the lab demonstrates it
+  with no credential.
+- **What the fake cannot prove.** A stand-in answers with whatever a test
+  scripts, so it cannot show that asking for the summary returns one.
+  The live test asserts a real run comes back with at least one.
 
 ## Next Steps
 
@@ -328,9 +373,10 @@ from one the model merely sampled differently.
 3. `Tiller.Tools.Schema` and `done/1`.
 4. `Tiller.Driver.LLM` with `:httpc`, retries, caps.
 5. `Tiller.FakeMessages` and the driver tests.
-6. Control band and cost in `Tiller.Race` and the lab.
+6. Control band and cost in `Tiller.Race` and the lab. (Done.)
 7. Integration test behind `TILLER_ANTHROPIC_API_KEY`, tagged
-   `:integration`, like the seed one.
+   `:integration`, like the seed one. (Done.)
+8. Summarized thinking in the turn pane. (Done; Open Question 4.)
 
 ## The Assignment
 

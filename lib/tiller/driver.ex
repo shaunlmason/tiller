@@ -14,7 +14,7 @@ defmodule Tiller.Driver do
   the reason, which is how an abnormal ending (a refusal, a spent budget)
   diverges from a normal one.
 
-  Two callbacks are optional, and a scripted driver needs neither:
+  Three callbacks are optional, and a scripted driver needs none:
 
     * `observe/3` is how a result reaches the driver at all. The session
       calls it after recording each event. `Tiller.FakeDriver` never looks
@@ -22,6 +22,11 @@ defmodule Tiller.Driver do
     * `override/3` is called at fork time for a `{:result_override, turn,
       result}` mutation, so a driver whose context embeds past results (a
       conversation) can rewrite the one that changed.
+    * `rationale/1` is why the driver just chose what it chose. The
+      session asks after every action and stores the answer on the
+      event, which is how the lab can show a turn's reasoning next to
+      the turn the same mutation produced elsewhere. A scripted driver
+      has no reason to give and does not export it.
   """
 
   @callback next_action(ctx :: term()) ::
@@ -33,8 +38,9 @@ defmodule Tiller.Driver do
   @callback usage(ctx :: term()) :: %{input: non_neg_integer, output: non_neg_integer} | nil
   @callback observe(ctx :: term(), Tiller.Event.action(), Tiller.Event.result()) :: term()
   @callback override(ctx :: term(), non_neg_integer, Tiller.Event.result()) :: term()
+  @callback rationale(ctx :: term()) :: binary | nil
 
-  @optional_callbacks usage: 1, observe: 3, override: 3
+  @optional_callbacks usage: 1, observe: 3, override: 3, rationale: 1
 
   @doc """
   What this run has spent, if the driver is the kind that spends anything.
@@ -44,6 +50,19 @@ defmodule Tiller.Driver do
   @spec usage(module, term) :: %{input: non_neg_integer, output: non_neg_integer} | nil
   def usage(driver, ctx) do
     if function_exported?(driver, :usage, 1), do: driver.usage(ctx), else: nil
+  end
+
+  @doc """
+  Why the action the driver just returned was chosen, if it can say.
+
+  Asked with the context `next_action/1` handed back, so it describes
+  the action about to be recorded and not the one before it. `nil` from
+  a driver that reads a script: there is no reasoning to report, and an
+  invented one would be worse than a blank.
+  """
+  @spec rationale(module, term) :: binary | nil
+  def rationale(driver, ctx) do
+    if function_exported?(driver, :rationale, 1), do: driver.rationale(ctx), else: nil
   end
 
   @doc "Build a quoted action term: the grammar is the capability boundary."

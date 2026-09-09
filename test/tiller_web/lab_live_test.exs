@@ -110,6 +110,41 @@ defmodule TillerWeb.LabLiveTest do
     assert html =~ ~r/across \d+ finished branch/
   end
 
+  test "the turn pane shows why the model chose a turn, and says when nothing reasoned" do
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    # A scripted run has no reasoning to show, and the pane says so once
+    # rather than leaving a row of empty boxes.
+    render_click(view, "record")
+    wait_until(fn -> render(view) =~ "halt" and render(view) =~ "root.1" end)
+    render_click(view, "select", %{"turn" => "0"})
+    assert render(view) =~ "This run kept no reasoning"
+
+    # A model run carries one per turn, and the pane shows the original's
+    # next to each branch's.
+    render_click(view, "record_model")
+    wait_until(fn -> render(view) =~ "done(" end, 200)
+
+    render_click(view, "select", %{"turn" => "0"})
+    html = render(view)
+    refute html =~ "This run kept no reasoning"
+    assert html =~ "The goal names three steps"
+    assert has_element?(view, "#detail p.why")
+
+    # Forked at turn 1, every branch decides that turn itself, so the pane
+    # shows one reason per branch beside the original's.
+    render_click(view, "select", %{"turn" => "1"})
+    render_click(view, "fork")
+    wait_until(fn -> not (render(view) =~ "running") end, 200)
+
+    html = render(view)
+    assert html =~ "the only step left that can fail"
+    assert reasons(html) > 1
+  end
+
+  # How many turn cards in the middle pane carry a reason.
+  defp reasons(html), do: length(String.split(html, ~s(class="why"))) - 1
+
   test "record, pick a turn, fork, and watch the race resolve" do
     {:ok, view, html} = live(build_conn(), "/")
     assert html =~ "no run yet"

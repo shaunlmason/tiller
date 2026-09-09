@@ -97,6 +97,18 @@ defmodule Tiller.PersistenceTest do
     assert next.seq == List.last(events).seq + 1
   end
 
+  test "the reason a turn was chosen survives the restart with the turn", %{path: path} do
+    {:ok, _} =
+      State.append("why", nil, 0, Driver.action(:spend, [4]), {:ok, 6}, %{
+        rationale: "spending 4 leaves room for the read"
+      })
+
+    State.reopen(path)
+
+    assert [event] = State.events("why")
+    assert Event.rationale(event) == "spending 4 leaves room for the read"
+  end
+
   test "a run the restart interrupted is picked up where it stopped", %{path: path} do
     # a slow run, killed part-way with no chance to halt
     pid =

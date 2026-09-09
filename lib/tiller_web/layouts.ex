@@ -40,6 +40,7 @@ defmodule TillerWeb.Layouts do
           .same { opacity: .55; }
           .diff { border-color: #ffb454; }
           .tag { font-size: 11px; color: #8b93a1; }
+          .why { margin: 6px 0 0; padding-left: 8px; border-left: 2px solid #3a3f48; color: #9aa3b2; white-space: pre-wrap; word-break: break-word; }
           table.grid { border-collapse: separate; border-spacing: 2px; margin-bottom: 12px; }
           table.grid th { font-weight: 500; color: #8b93a1; font-size: 11px; padding: 0 2px 4px; }
           table.grid th.selected { color: #4f8cff; }

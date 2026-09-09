@@ -6,8 +6,8 @@ defmodule Tiller.Driver.LLMLiveTest do
       TILLER_ANTHROPIC_API_KEY=sk-... mix test --include integration
 
   What it proves that the scripted tests cannot: the request shape is
-  one the API accepts, and a real model's `tool_use` maps onto tiller's
-  whitelist.
+  one the API accepts, a real model's `tool_use` maps onto tiller's
+  whitelist, and asking for summarized thinking actually returns some.
   """
   use ExUnit.Case, async: false
   @moduletag :integration
@@ -44,5 +44,11 @@ defmodule Tiller.Driver.LLMLiveTest do
 
     # the run ended by finishing, not by a cap or a refusal
     assert %Event{action: :halt, result: {:halted, ^turns}} = List.last(events)
+
+    # `display: "summarized"` is only worth sending if it comes back: the
+    # default returns thinking blocks whose text is empty, and a fake API
+    # cannot tell the two apart.
+    assert Enum.any?(events, &Event.rationale/1),
+           "no turn came back with summarized thinking"
   end
 end

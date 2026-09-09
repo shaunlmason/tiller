@@ -96,10 +96,14 @@ defmodule Tiller.State do
   @doc """
   Append an attributed event. Returns the stored event with its `seq`.
 
-  `next_snapshot` parks the following turn's starting point in the same
-  write. The two belong together: an event durable without the snapshot
-  that follows it leaves a run with no point to resume from, so a crash
-  between them must not be possible.
+  `extra` carries what the session knows about the turn beyond the action
+  and its result:
+
+    * `:snapshot` parks the following turn's starting point in the same
+      write. The two belong together: an event durable without the
+      snapshot that follows it leaves a run with no point to resume from,
+      so a crash between them must not be possible.
+    * `:rationale` is why the driver chose the action, when it can say.
   """
   @spec append(
           binary,
@@ -107,12 +111,12 @@ defmodule Tiller.State do
           non_neg_integer,
           Event.action() | :halt,
           Event.result(),
-          map | nil
+          %{optional(:snapshot) => map, optional(:rationale) => binary | nil}
         ) :: {:ok, Event.t()}
-  def append(session_id, parent_id, turn, action, result, next_snapshot \\ nil) do
+  def append(session_id, parent_id, turn, action, result, extra \\ %{}) do
     GenServer.call(
       __MODULE__,
-      {:append, session_id, parent_id, turn, action, result, next_snapshot}
+      {:append, session_id, parent_id, turn, action, result, extra}
     )
   end
 
@@ -184,7 +188,7 @@ defmodule Tiller.State do
   def clear, do: GenServer.call(__MODULE__, :clear)
 
   @impl true
-  def handle_call({:append, session_id, parent_id, turn, action, result, next_snapshot}, _from, s) do
+  def handle_call({:append, session_id, parent_id, turn, action, result, extra}, _from, s) do
     seq = s.seq + 1
 
     event = %Event{
@@ -193,7 +197,8 @@ defmodule Tiller.State do
       parent_id: parent_id,
       turn: turn,
       action: action,
-      result: result
+      result: result,
+      rationale: Map.get(extra, :rationale)
     }
 
     for pid <- Map.get(s.subs, session_id, []) ++ Map.get(s.subs, :all, []) do
@@ -201,7 +206,7 @@ defmodule Tiller.State do
     end
 
     s =
-      case next_snapshot do
+      case Map.get(extra, :snapshot) do
         nil ->
           record(s, {:event, event})
           s

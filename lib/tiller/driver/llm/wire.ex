@@ -99,6 +99,27 @@ defmodule Tiller.Driver.LLM.Wire do
     end
   end
 
+  @doc """
+  The model's summarized reasoning for this response, or `nil`.
+
+  Thinking blocks come back on every response from a thinking model, but
+  their text is empty unless the request asked for
+  `thinking.display: "summarized"`, so an empty join is `nil` rather
+  than a blank the lab would render as a heading with nothing under it.
+  The raw chain of thought is never returned by the API; this is the
+  summary of it.
+  """
+  @spec thinking([map]) :: String.t() | nil
+  def thinking(content) do
+    text =
+      content
+      |> Enum.filter(&(&1["type"] == "thinking"))
+      |> Enum.map_join("\n", &(&1["thinking"] || ""))
+      |> String.trim()
+
+    if text == "", do: nil, else: text
+  end
+
   @doc "Every text block, joined. The model's answer when it called no tool."
   @spec text([map]) :: String.t()
   def text(content) do
