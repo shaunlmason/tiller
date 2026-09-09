@@ -363,6 +363,28 @@ defmodule Tiller.Driver.LLMTest do
       assert Event.rationale(Enum.at(branch_events, 2)) != nil
     end
 
+    test "a run whose context predates the field keeps going, and asks for the summary" do
+      # What a snapshot written by the build before this one holds: the
+      # same context, without the keys this change added. A resume or a
+      # fork hands it straight to the driver.
+      api = start_api(&answer/1)
+
+      legacy =
+        "Store a key, then finish."
+        |> LLM.context(base_url: api.base_url)
+        |> Map.drop([:display, :rationale])
+
+      {:ok, pid} = Session.start_link(driver: LLM, ctx: legacy, id: "legacy")
+      Session.run(pid)
+      assert {:halted, _} = Session.await("legacy", 15_000)
+
+      # It ran, it asked for the summary at the current default, and the
+      # turns it decided carry one.
+      assert [request | _] = FakeMessages.requests(api)
+      assert request["thinking"] == %{"type" => "adaptive", "display" => "summarized"}
+      assert Enum.any?(State.events("legacy"), &Event.rationale/1)
+    end
+
     test "a scripted driver records no reason rather than an invented one" do
       ctx = FakeDriver.context([Driver.action(:echo, ["hi"])])
       {:ok, pid} = Session.start_link(driver: FakeDriver, ctx: ctx, id: "no-why")

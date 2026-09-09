@@ -75,16 +75,19 @@ defmodule Tiller.Driver.Replay do
     }
   end
 
+  # `rationale` and `delegating` are put rather than struct-updated: a
+  # branch resumed from a snapshot taken by an older build has a context
+  # without them, and a field added here must not be what stops it.
   @impl true
   def next_action(%{prefix: [event | rest], turn: turn} = ctx) do
     result = Map.get(ctx.overrides, turn, event.result)
+    ctx = %{ctx | prefix: rest, turn: turn + 1}
 
-    {:replay, event.action, result,
-     %{ctx | prefix: rest, turn: turn + 1, rationale: Event.rationale(event)}}
+    {:replay, event.action, result, Map.put(ctx, :rationale, Event.rationale(event))}
   end
 
   def next_action(%{prefix: [], delegate: delegate, delegate_ctx: dctx} = ctx) do
-    ctx = %{ctx | delegating: true, rationale: nil}
+    ctx = ctx |> Map.put(:delegating, true) |> Map.put(:rationale, nil)
 
     case delegate.next_action(dctx) do
       :halt -> :halt

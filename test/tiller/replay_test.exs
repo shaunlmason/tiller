@@ -58,6 +58,26 @@ defmodule Tiller.Driver.ReplayTest do
     assert ToolState.snapshot() == ToolState.initial()
   end
 
+  test "a branch resumed with a context from an older build still replays" do
+    original = record("orig", @script)
+    ToolState.reset()
+
+    # A branch snapshot taken before `rationale` existed. The branch comes
+    # back through it, so a field added to the context must not be what
+    # stops a run an upgrade inherited.
+    legacy =
+      original
+      |> Replay.context(FakeDriver, FakeDriver.context([]), turn: 2)
+      |> Map.drop([:rationale, :delegating])
+
+    replayed = replay("branch", legacy)
+
+    assert Enum.map(replayed, & &1.action) ==
+             Enum.map(Enum.take(original, 2), & &1.action) ++ [:halt]
+
+    assert ToolState.snapshot() == ToolState.initial()
+  end
+
   test "a result override changes one replayed turn" do
     original = record("orig", @script)
     override = %{1 => {:error, :budget_exceeded}}

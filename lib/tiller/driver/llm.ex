@@ -24,7 +24,9 @@ defmodule Tiller.Driver.LLM do
       rebuild a conversation from events.
 
   The request asks for summarized thinking, so each event can carry why
-  the model chose it. The raw chain of thought is never returned by the
+  the model chose it. A context restored from a durable log may be older
+  than that field, so it is read and written through `Map`: an upgrade
+  must not kill the runs it inherits. The raw chain of thought is never returned by the
   API; the summary is, and only when asked (`display` defaults to
   `omitted`, whose thinking blocks arrive with empty text). Blocks are
   echoed back unchanged with the rest of the assistant turn, which is
@@ -45,6 +47,7 @@ defmodule Tiller.Driver.LLM do
   alias Tiller.Driver.LLM.Wire
 
   @default_model "claude-opus-5"
+  @default_display :summarized
   @default_max_turns 12
   @default_max_input_tokens 200_000
   @max_tokens 4_096
@@ -97,7 +100,7 @@ defmodule Tiller.Driver.LLM do
       whitelist: whitelist,
       messages: [%{"role" => "user", "content" => goal}],
       effort: Keyword.get(opts, :effort, :low),
-      display: Keyword.get(opts, :display, :summarized),
+      display: Keyword.get(opts, :display, @default_display),
       # the reasoning behind the action last returned, for the log
       rationale: nil,
       max_turns: Keyword.get(opts, :max_turns, @default_max_turns),
@@ -227,8 +230,10 @@ defmodule Tiller.Driver.LLM do
     ctx = count(ctx, body)
     content = Map.get(body, "content") || []
     # Read before the branch below, so a halt does not carry the last
-    # turn's reasoning forward as if it explained this one.
-    ctx = %{ctx | rationale: Wire.thinking(content)}
+    # turn's reasoning forward as if it explained this one. Put, not a
+    # struct update: a context read back from a durable log can predate
+    # the field, and a resumed run must not die on the key.
+    ctx = Map.put(ctx, :rationale, Wire.thinking(content))
 
     case Wire.decode(body) do
       {:tool_use, id, action} ->
@@ -279,14 +284,20 @@ defmodule Tiller.Driver.LLM do
       # one action per turn is what the session's loop expects
       "tool_choice" => %{"type" => "auto", "disable_parallel_tool_use" => true},
       # Adaptive is the only mode this model takes, and `display` is what
-      # decides whether the thinking blocks it returns carry any text.
-      "thinking" => %{"type" => "adaptive", "display" => to_string(ctx.display || :omitted)},
+      # decides whether the thinking blocks it returns carry any text. A
+      # context older than the field asks for the current default, like a
+      # run started today.
+      "thinking" => %{"type" => "adaptive", "display" => display(ctx)},
       "messages" => ctx.messages
     }
 
     if ctx.effort,
       do: Map.put(base, "output_config", %{"effort" => to_string(ctx.effort)}),
       else: base
+  end
+
+  defp display(ctx) do
+    to_string(Map.get(ctx, :display, @default_display) || :omitted)
   end
 
   defp post(ctx), do: post(ctx, 0)
