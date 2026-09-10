@@ -148,6 +148,14 @@ defmodule Tiller.Driver.Replay do
 
   def rationale(ctx), do: Map.get(ctx, :rationale)
 
+  @doc """
+  A branch's children come from the delegate, not from this module: the
+  replayed prefix is a record of children the source already started.
+  """
+  @impl true
+  def subagent(%{delegate: d, delegate_ctx: dctx}, goal),
+    do: Tiller.Driver.subagent(d, dctx, goal)
+
   @impl true
   def override(ctx, turn, result) do
     %{ctx | delegate_ctx: Tiller.Driver.override(ctx.delegate, ctx.delegate_ctx, turn, result)}

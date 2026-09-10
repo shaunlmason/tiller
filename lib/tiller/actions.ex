@@ -2,7 +2,7 @@ defmodule Tiller.Actions do
   @moduledoc """
   Action registry. The whitelist *is* the capability boundary: an agent can
   only call what its session's whitelist allows. Subagents get a smaller
-  whitelist and never get `spawn_subagent` (depth limit).
+  whitelist and never get the delegation verbs (depth limit).
   """
 
   # Tools every session gets. Each has an observable side effect or a
@@ -39,7 +39,12 @@ defmodule Tiller.Actions do
     {:seed_comment, 3}
   ]
 
-  @root_tools @base_tools ++ [{:spawn_subagent, 2}] ++ @seed_read ++ @seed_worker
+  # Delegation is a root capability: a subagent gets neither verb, so it
+  # cannot spawn and cannot wait on anything. That is the depth limit, and
+  # it is also why `await/1` cannot be used to read another run's log.
+  @delegation [{:spawn_subagent, 2}, {:spawn, 1}, {:await, 1}]
+
+  @root_tools @base_tools ++ @delegation ++ @seed_read ++ @seed_worker
   @sub_tools @base_tools ++ @seed_read
 
   def root_whitelist, do: @root_tools

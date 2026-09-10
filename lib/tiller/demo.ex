@@ -43,8 +43,9 @@ defmodule Tiller.Demo do
   stand-in for the Messages API, so it needs no credential and costs
   nothing, and against the real API when one is configured. This is the
   run that makes the model-only parts of the lab visible: token cost per
-  branch, a control band that can actually be non-zero, and a reason
-  under every turn.
+  branch, a control band that can actually be non-zero, a reason under
+  every turn, and a subagent the parent waits on, whose own trajectory
+  hangs under the parent's in the timeline.
 
   Options: `:base_url` and `:api_key` to point at the real API instead.
   Returns `{pid, api}`, where `api` is `nil` when it went to the network.
@@ -74,12 +75,25 @@ defmodule Tiller.Demo do
 
   # A stand-in model: it answers from what the conversation has already
   # done, not from a fixed list, so branches racing concurrently against
-  # one fake API each get their own coherent run.
+  # one fake API each get their own coherent run. The parent delegates the
+  # read; the subagent's own turns come back through here too, told apart
+  # by the system prompt it was started with.
   defp toy_goal(request) do
+    if subagent?(request), do: reader(request), else: toy_parent(request)
+  end
+
+  defp subagent?(request), do: String.contains?(request["system"] || "", "You are a subagent")
+
+  defp toy_parent(request) do
     called = tools_called(request)
 
     cond do
-      "put" not in called ->
+      not offered?(request, "put") and not offered?(request, "spawn") ->
+        Tiller.FakeMessages.done("nothing I was given can store or delegate",
+          thinking: "The tools I have cannot advance this goal, so saying so is the honest end."
+        )
+
+      "put" not in called and offered?(request, "put") ->
         Tiller.FakeMessages.tool_use(
           "put",
           %{"key" => "greeting", "value" => "hello from a model"},
@@ -96,15 +110,53 @@ defmodule Tiller.Demo do
               "it goes before the read."
         )
 
-      "get" not in called ->
+      "spawn" not in called and offered?(request, "spawn") ->
+        Tiller.FakeMessages.tool_use("spawn", %{"goal" => "read the greeting back and report it"},
+          thinking:
+            "Reading it back is separable from what I am doing, so it goes to a subagent " <>
+              "while I keep the budget."
+        )
+
+      "await" not in called and "spawn" in called and offered?(request, "await") ->
+        Tiller.FakeMessages.tool_use("await", %{"turn" => 2},
+          thinking: "Nothing else can move until the subagent answers."
+        )
+
+      "await" in called ->
+        Tiller.FakeMessages.done("stored the greeting, spent 4, had a subagent read it back",
+          thinking:
+            "The subagent answered with what it read, which is the last thing the goal asked for."
+        )
+
+      # No one to send: read it back myself if I still can.
+      "get" not in called and offered?(request, "get") ->
         Tiller.FakeMessages.tool_use("get", %{"key" => "greeting"},
-          thinking: "Reading the key back is what shows the store kept what I put in it."
+          thinking: "With no subagent to send, reading it back is mine to do."
         )
 
       true ->
-        Tiller.FakeMessages.done("stored the greeting, spent 4, read it back",
-          thinking: "All three steps are in the log with the results I expected. Nothing is left."
+        Tiller.FakeMessages.done("did what the tools I was given allow",
+          thinking: "Nothing left that I can reach."
         )
+    end
+  end
+
+  # A model calls what it is offered. A branch whose whitelist lost a tool
+  # plans without it, which is what makes a whitelist mutation a question
+  # about the agent rather than about the refusal it would have hit.
+  defp offered?(request, name),
+    do: Enum.any?(request["tools"] || [], &(&1["name"] == name))
+
+  # The subagent: one goal, the smaller whitelist, no delegation of its own.
+  defp reader(request) do
+    if "get" in tools_called(request) do
+      Tiller.FakeMessages.done("the greeting reads: hello from a model",
+        thinking: "That is what the parent asked me for."
+      )
+    else
+      Tiller.FakeMessages.tool_use("get", %{"key" => "greeting"},
+        thinking: "The parent stored it; reading the key is the whole job."
+      )
     end
   end
 
