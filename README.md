@@ -5,6 +5,15 @@ interactively, or a session that spawns supervised subagents. Subagents are
 not a mode — they're a tool (`spawn`) in the parent's whitelist, and a
 parent waits for one with another (`await`).
 
+### The name
+
+A tiller is the lever on a rudder: one hand, one course, small
+corrections. That is the harness this started as. In grasses, tillering
+is when one plant sends up many stems from the same crown: every stem
+shares the root, they grow in parallel, and the plant keeps the ones
+that make it. That is the lab this became. The name reads as a rudder
+and the code reads as a crown, and both readings are meant.
+
 ## Design
 
 ### The borrowed idea
