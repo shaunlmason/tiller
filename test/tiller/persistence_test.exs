@@ -89,7 +89,7 @@ defmodule Tiller.PersistenceTest do
     io = Tiller.State.Log.open(path)
     Tiller.State.Log.append(io, {:profile, "a", %{driver: FakeDriver}})
     Tiller.State.Log.append(io, {:resumes, "a", 2})
-    File.close(io)
+    Tiller.State.Log.close(io)
     File.write!(path, <<0, 0, 0, 64, "half a frame">>, [:append])
 
     assert [{:profile, "a", %{driver: FakeDriver}}, {:resumes, "a", 2}] =

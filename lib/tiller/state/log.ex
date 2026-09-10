@@ -176,10 +176,20 @@ defmodule Tiller.State.Log do
     <<byte_size(bin)::32, bin::binary>>
   end
 
+  @doc """
+  Close the file behind a handle.
+
+  A handle is a struct, not the raw device it wraps, so `File.close/1` on
+  one does not close anything: it fails the type check and leaves the
+  descriptor open and writable. This is how a caller lets go of a log.
+  """
+  @spec close(t) :: :ok | {:error, File.posix()}
+  def close(%__MODULE__{io: io}), do: File.close(io)
+
   @doc "Empty the file and hand back a fresh handle."
   @spec truncate(t, Path.t()) :: t
-  def truncate(%__MODULE__{io: io}, path) do
-    File.close(io)
+  def truncate(%__MODULE__{} = log, path) do
+    close(log)
     File.write!(path, "")
     open(path)
   end

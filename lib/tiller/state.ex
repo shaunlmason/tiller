@@ -287,7 +287,7 @@ defmodule Tiller.State do
   def handle_call({:profile, id}, _from, s), do: {:reply, Map.fetch(s.profiles, id), s}
 
   def handle_call({:reopen, path}, _from, s) do
-    if s.log, do: File.close(s.log.io)
+    if s.log, do: Tiller.State.Log.close(s.log)
     {:reply, :ok, load(path)}
   end
 

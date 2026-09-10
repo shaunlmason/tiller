@@ -45,6 +45,7 @@ defmodule Tiller.State.LogTest do
     Log.append_all(log, frames)
 
     assert Log.read(path) == frames
+    assert :ok = Log.close(log)
   end
 
   test "an element is stored once, however many frames name it", %{path: path} do
@@ -71,8 +72,9 @@ defmodule Tiller.State.LogTest do
 
     # One more turn costs about one more message, not one more run.
     before = size(path)
-    Log.append_all(log, [snapshot("root", 61, messages ++ [message(61)])])
+    log = Log.append_all(log, [snapshot("root", 61, messages ++ [message(61)])])
     assert size(path) - before < 4 * byte_size(:erlang.term_to_binary(message(61)))
+    Log.close(log)
   end
 
   test "a list consumed from the front shares as well as one grown at the end", %{path: path} do
@@ -94,7 +96,7 @@ defmodule Tiller.State.LogTest do
     assert Log.read(path) ==
              for(turn <- 0..59, do: snapshot("branch", turn, Enum.drop(messages, turn)))
 
-    assert %Log{} = log
+    Log.close(log)
   end
 
   test "a list of identical elements stays bounded rather than rewriting itself", %{path: path} do
@@ -112,13 +114,14 @@ defmodule Tiller.State.LogTest do
     assert Log.read(path) ==
              for(turn <- 1..40, do: snapshot("same", turn, Enum.take(same, 5 * turn)))
 
-    assert %Log{} = log
+    Log.close(log)
   end
 
   test "reopening does not rewrite what the file already holds", %{path: path} do
     messages = Enum.map(1..40, &message/1)
     log = Log.open(path)
     Log.append_all(log, [snapshot("root", 1, messages)])
+    Log.close(log)
     first = size(path)
 
     # What a restart does: the frames come back, and the handle that comes
@@ -126,11 +129,12 @@ defmodule Tiller.State.LogTest do
     {frames, log} = Log.restore(path)
     assert frames == [snapshot("root", 1, messages)]
 
-    Log.append_all(log, [snapshot("root", 2, messages)])
+    log = Log.append_all(log, [snapshot("root", 2, messages)])
     added = size(path) - first
 
     assert added < 2_000, "a snapshot of unchanged messages cost #{added} bytes"
     assert Log.read(path) == [snapshot("root", 1, messages), snapshot("root", 2, messages)]
+    Log.close(log)
   end
 
   test "a tail a crash cut in half is dropped, and the next append lands where it is read",
@@ -138,6 +142,7 @@ defmodule Tiller.State.LogTest do
     messages = Enum.map(1..30, &message/1)
     log = Log.open(path)
     Log.append_all(log, [snapshot("root", 1, messages)])
+    Log.close(log)
     whole = size(path)
 
     # a write that did not finish
@@ -147,9 +152,10 @@ defmodule Tiller.State.LogTest do
 
     log = Log.open(path)
     assert size(path) == whole
-    Log.append_all(log, [{:resumes, "root", 1}])
+    log = Log.append_all(log, [{:resumes, "root", 1}])
 
     assert Log.read(path) == [snapshot("root", 1, messages), {:resumes, "root", 1}]
+    Log.close(log)
   end
 
   test "truncate empties the file and forgets what was in it", %{path: path} do
@@ -161,7 +167,20 @@ defmodule Tiller.State.LogTest do
 
     # The elements are gone from the file, so they are written again
     # rather than referenced into nothing.
-    Log.append_all(log, [snapshot("root", 1, messages)])
+    log = Log.append_all(log, [snapshot("root", 1, messages)])
     assert Log.read(path) == [snapshot("root", 1, messages)]
+    Log.close(log)
+  end
+
+  test "a handle is closed through the module, because it is not the device", %{path: path} do
+    log = Log.append_all(Log.open(path), [{:resumes, "root", 1}])
+
+    # File.close/1 takes a device, and a handle is a struct wrapping one:
+    # it fails the type check and leaves the descriptor open and writable,
+    # which is a leak a caller has no way to see.
+    assert :ok = Log.close(log)
+    assert catch_error(IO.binwrite(log.io, "after the close"))
+
+    assert Log.read(path) == [{:resumes, "root", 1}]
   end
 end
