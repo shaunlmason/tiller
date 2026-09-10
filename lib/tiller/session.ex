@@ -102,7 +102,21 @@ defmodule Tiller.Session do
       mutation: s.mutation
     })
 
+    # A tool runs in this process; this is how one that starts a child
+    # (`Tiller.Tools.spawn/1`) puts it in the same store the parent reads.
+    Process.put(:tiller_session_state, state)
+
     tool_opt = Keyword.get(opts, :tool_state)
+
+    # What this run already spawned, read back from its own log. A restart
+    # keeps the turns and the context, so it has to keep the handles too:
+    # without this a resumed run cannot wait on a child it started, which
+    # is exactly what a kill at an await turn produces.
+    s = %{
+      s
+      | children:
+          Enum.reduce(state.events(id), s.children, &remember_child(&2, &1.action, &1.result))
+    }
 
     case resume_point(state, id) do
       :fresh ->
@@ -254,6 +268,14 @@ defmodule Tiller.Session do
   """
   @spec current_driver() :: {module, term} | nil
   def current_driver, do: Process.get(:tiller_session_driver)
+
+  @doc """
+  The event store the session the calling process is running in writes
+  to. A child started from inside a turn belongs in the same one, or the
+  parent cannot see it.
+  """
+  @spec current_state() :: module | nil
+  def current_state, do: Process.get(:tiller_session_state)
 
   @doc "Start the loop. Returns immediately; the run proceeds one turn per message."
   @spec run(pid | id) :: :ok
@@ -498,7 +520,7 @@ defmodule Tiller.Session do
         {:tiller_event, %Event{session_id: id, action: :halt}},
         %{awaiting: %{id: id}} = s
       ),
-      do: finish_await(s, outcome(id))
+      do: finish_await(s, outcome(s.state, id))
 
   # Its other turns, which the subscription also delivers.
   def handle_info({:tiller_event, %Event{}}, s), do: {:noreply, s}
@@ -552,7 +574,7 @@ defmodule Tiller.Session do
         # otherwise be waited on for ever.
         s.state.subscribe(id)
 
-        case outcome(id) do
+        case outcome(s.state, id) do
           :running ->
             timer = Process.send_after(self(), {:await_timeout, id}, s.await_timeout)
             {:noreply, %{s | awaiting: %{action: a, ctx: ctx, id: id, timer: timer}}}
@@ -572,28 +594,36 @@ defmodule Tiller.Session do
 
   # Which session the turn's subagent is. A live spawn made it under this
   # session's id; a replayed one is a record of a child the run this
-  # branch replayed started, so the ancestry is where to look.
+  # branch replayed started, so the ancestry is where to look. A branch of
+  # a branch of a branch nests as deep as anyone forks, so the walk runs
+  # to the root rather than to a number someone picked.
   defp child_id(s, turn) do
-    Enum.find_value([s.id | ancestors(s.parent_id, 8)], fn id ->
+    Enum.find_value([s.id | ancestors(s.state, s.parent_id)], fn id ->
       candidate = "#{id}.#{turn}"
       if match?({:ok, _}, s.state.profile(candidate)), do: candidate
     end)
   end
 
-  defp ancestors(nil, _left), do: []
-  defp ancestors(_id, 0), do: []
+  defp ancestors(state, id, seen \\ MapSet.new())
+  defp ancestors(_state, nil, _seen), do: []
 
-  defp ancestors(id, left) do
-    case Tiller.State.profile(id) do
-      {:ok, %{parent_id: parent}} -> [id | ancestors(parent, left - 1)]
-      _ -> [id]
+  defp ancestors(state, id, seen) do
+    # A profile that pointed at itself, or at anything already walked,
+    # would otherwise be a loop rather than an ancestry.
+    if MapSet.member?(seen, id) do
+      []
+    else
+      case state.profile(id) do
+        {:ok, %{parent_id: parent}} -> [id | ancestors(state, parent, MapSet.put(seen, id))]
+        _ -> [id]
+      end
     end
   end
 
   # What a subagent finished with, read from its own trajectory: its
   # answer when it gave one, why it stopped when it did not.
-  defp outcome(id) do
-    events = Tiller.State.events(id)
+  defp outcome(state, id) do
+    events = state.events(id)
 
     case List.last(events) do
       %Event{action: :halt, result: result} ->
@@ -637,7 +667,7 @@ defmodule Tiller.Session do
     # the unobserved one and a resumed model loses the result it was
     # answering.
     ctx = Driver.observe(s.driver, ctx, action, result)
-    s = %{remember_child(s, action, result) | ctx: ctx, turns: s.turns + 1}
+    s = %{s | children: remember_child(s.children, action, result), ctx: ctx, turns: s.turns + 1}
 
     # The event and the next turn's starting point go in together. Parking
     # the snapshot covers a process that dies in the gap between turns,
@@ -657,16 +687,11 @@ defmodule Tiller.Session do
   # A turn that started a subagent is a turn this run may wait on. A
   # replayed one counts: the branch inherited the child with the prefix,
   # and `child_id/2` is what finds whose it is.
-  defp remember_child(s, {:call, Tiller.Tools, f, _args}, {:ok, started})
-       when f in [:spawn, :spawn_subagent] do
-    case started do
-      {:spawned, turn} -> %{s | children: MapSet.put(s.children, turn)}
-      {:subagent_started, turn} -> %{s | children: MapSet.put(s.children, turn)}
-      _other -> s
-    end
-  end
+  defp remember_child(children, {:call, Tiller.Tools, f, _args}, {:ok, {tag, turn}})
+       when f in [:spawn, :spawn_subagent] and tag in [:spawned, :subagent_started],
+       do: MapSet.put(children, turn)
 
-  defp remember_child(s, _action, _result), do: s
+  defp remember_child(children, _action, _result), do: children
 
   defp schedule_turn(%{latency: 0}), do: send(self(), :turn)
   defp schedule_turn(%{latency: ms}), do: Process.send_after(self(), :turn, ms)

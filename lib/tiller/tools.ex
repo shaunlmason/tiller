@@ -152,13 +152,15 @@ defmodule Tiller.Tools do
 
     spec =
       Tiller.Session.child_spec(
-        id: child_id(parent_id, turn),
-        parent_id: parent_id,
-        parent: self(),
-        driver: driver,
-        ctx: ctx,
-        whitelist: Tiller.Actions.sub_whitelist(),
-        tool_state: Tiller.ToolState.current()
+        [
+          id: child_id(parent_id, turn),
+          parent_id: parent_id,
+          parent: self(),
+          driver: driver,
+          ctx: ctx,
+          whitelist: Tiller.Actions.sub_whitelist(),
+          tool_state: Tiller.ToolState.current()
+        ] ++ store()
       )
 
     case DynamicSupervisor.start_child(sup, spec) do
@@ -171,6 +173,15 @@ defmodule Tiller.Tools do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  # A child writes to the store its parent reads: a session on a store of
+  # its own would otherwise start children its own `await` cannot find.
+  defp store do
+    case Tiller.Session.current_state() do
+      nil -> []
+      state -> [state: state]
     end
   end
 

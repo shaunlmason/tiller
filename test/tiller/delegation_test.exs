@@ -1,3 +1,31 @@
+defmodule Tiller.DelegationTest.RecordingStore do
+  @moduledoc """
+  A store of the kind `Tiller.Session`'s `:state` option advertises: the
+  real one, with a note of which sessions were written through it. A child
+  started by a parent on this store must land here, or the parent cannot
+  see the child it started.
+  """
+  alias Tiller.State
+
+  def start_link, do: Agent.start_link(fn -> [] end, name: __MODULE__)
+  def written, do: Agent.get(__MODULE__, & &1)
+
+  def put_profile(id, profile) do
+    Agent.update(__MODULE__, &[id | &1])
+    State.put_profile(id, profile)
+  end
+
+  defdelegate append(session_id, parent_id, turn, action, result, extra), to: State
+  defdelegate append(session_id, parent_id, turn, action, result), to: State
+  defdelegate events(session_id), to: State
+  defdelegate snapshot(session_id, turn), to: State
+  defdelegate snapshot(session_id, turn, snap), to: State
+  defdelegate profile(id), to: State
+  defdelegate bump_resumes(id), to: State
+  defdelegate subscribe(id), to: State
+  defdelegate unsubscribe(id), to: State
+end
+
 defmodule Tiller.DelegationTest do
   @moduledoc """
   Spawning a subagent and waiting for it: the parent uses the child's
@@ -143,6 +171,77 @@ defmodule Tiller.DelegationTest do
 
     assert {:halted, 2} = Session.await(pid, 5_000)
     assert [{:spawn, {:error, :not_whitelisted}} | _] = results("root.0")
+  end
+
+  test "a run killed at the turn it was waiting on comes back and still has its child" do
+    # The kill the lab's own sweep generates for an await turn. A restart
+    # keeps the turns and the context, so it has to keep the handles too.
+    child = FakeDriver.context([Driver.action(:done, ["child answer"])])
+
+    pid =
+      start(
+        "root",
+        [
+          Driver.action(:spawn_subagent, [FakeDriver, child]),
+          Driver.action(:await, [0]),
+          Driver.action(:done, ["used it"])
+        ],
+        kill_at: 1
+      )
+
+    assert {:halted, 3} = Session.await(pid, 5_000)
+    assert %{resumed: true} = Session.info("root")
+    assert [_spawn, {:await, {:ok, {:done, "child answer"}}}, _done] = results("root")
+  end
+
+  test "a child is started on the store its parent reads" do
+    start_supervised!(%{
+      id: :recording_store,
+      start: {Tiller.DelegationTest.RecordingStore, :start_link, []}
+    })
+
+    child = FakeDriver.context([Driver.action(:done, ["through the same store"])])
+
+    pid =
+      start(
+        "root",
+        [Driver.action(:spawn_subagent, [FakeDriver, child]), Driver.action(:await, [0])],
+        state: Tiller.DelegationTest.RecordingStore
+      )
+
+    assert {:halted, 2} = Session.await(pid, 5_000)
+
+    # The child wrote its profile through the parent's store, which is the
+    # only reason the parent could find it to wait on.
+    assert "root.0" in Tiller.DelegationTest.RecordingStore.written()
+    assert [_spawn, {:await, {:ok, {:done, "through the same store"}}}] = results("root")
+  end
+
+  test "however deep the forks nest, the wait finds whose child the replayed spawn started" do
+    child = FakeDriver.context([Driver.action(:done, ["from the original"])])
+
+    pid =
+      start("root", [
+        Driver.action(:spawn_subagent, [FakeDriver, child]),
+        Driver.action(:echo, ["between"]),
+        Driver.action(:await, [0])
+      ])
+
+    assert {:halted, 3} = Session.await(pid, 5_000)
+
+    # Each level forks the level above after its spawn, so the run that
+    # started the child gets one hop further away every time. Ten of them
+    # is past any number someone would have picked for a cap.
+    deepest =
+      Enum.reduce(1..10, "root", fn _level, id ->
+        {:ok, branch} = Session.fork(id, 1, nil)
+        {:ok, branch_id} = Session.id_of(branch)
+        Session.run(branch)
+        assert {:halted, _} = Session.await(branch_id, 5_000)
+        branch_id
+      end)
+
+    assert [_spawn, _echo, {:await, {:ok, {:done, "from the original"}}}] = results(deepest)
   end
 
   test "a driver that cannot make a child refuses rather than inventing one" do
