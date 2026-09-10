@@ -211,6 +211,28 @@ For a spike, not a product:
 5. Ask Substrate's maintainers open question 1 before building anything
    above the worktree.
 
+## Naming
+
+Tiller stays the name of the repo and the instrument. A tiller is the
+lever on a rudder, which fits the harness; in grasses, tillering is one
+plant sending up many stems from a shared crown and keeping the ones
+that make it, which fits the fork-and-race lab exactly. The README now
+owns both readings.
+
+If the speculative-execution product ever exists it wants its own name,
+and the honest vocabulary is the CPU's, where the idea comes from: a
+processor predicts a branch, executes ahead, retires the instructions
+that were right, and squashes the ones that were not.
+
+- **Squash**: what happens to the futures that lose. A verb, and the
+  promise is in it: the mistake is squashed, not undone. Preferred.
+- **Retire**: the CPU's word for committing a result. Quieter; says the
+  kept branch is the one that finished.
+- **Tillering**: keeps the lineage if the product stays inside this
+  repo's story.
+
+Recommendation: Squash for a product, Tiller for the lab that proves it.
+
 ## Research
 
 - [Agent Substrate](https://github.com/agent-substrate/substrate): suspend
