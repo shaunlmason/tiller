@@ -85,6 +85,13 @@ Tiller (DynamicSupervisor)
   `Tiller.resume_dead/0` then picks up the runs a restart interrupted, the
   same way the supervisor picks up a killed branch. Off by default; dev
   writes `tmp/tiller-state.log`.
+  A snapshot holds the driver context, and for a model that is the whole
+  conversation, so writing it whole every turn cost the square of the run:
+  200 turns over an 80KB context wrote 18MB. Big list elements are stored
+  once, content-addressed, and a snapshot names them; a turn writes what
+  changed. The same run now writes 200KB, and because the addressing is by
+  content, a race stores one copy of the prefix its branches share rather
+  than one each.
 - **Lab** (`TillerWeb.LabLive`): three panes. Timeline of the recorded run
   on the left (click a turn to pick the fork point), that turn across every
   branch in the middle with the reasoning behind each, and on the right a
@@ -125,17 +132,27 @@ Tiller (DynamicSupervisor)
 
 - Actions are flat MFA terms, no macros/macros-as-prompts. Add when a real
   LLM driver needs composability the whitelist can't express.
-- `Tiller.State` is an in-memory list, not ETS/Ecto. Add persistence when
-  you need replay across restarts. Subscriptions are a monitored pid map in
-  the GenServer, deliberately not `Phoenix.PubSub`, so `lib/tiller` stays
-  free of Phoenix.
+- `Tiller.State` is an in-memory list with a per-session index beside it,
+  not ETS/Ecto: one process owns every read, so a lab-sized store is fast
+  and a very large one would want a table. Subscriptions are a monitored
+  pid map in the GenServer, deliberately not `Phoenix.PubSub`, so
+  `lib/tiller` stays free of Phoenix.
 - One turn per message, no concurrent tool calls within a turn.
   Add `Task.async_stream` when a single turn needs fan-out.
 - `spawn_subagent` starts the child and returns; there is no `await` tool
   yet, so a parent cannot use a subagent's result within its own run.
-- The durable store is one file read whole at start, and a snapshot is
-  written per turn, so the log grows with the square of a long run's
-  context. Fine for a lab; a table when it is not.
+- The durable store is still one file, read whole at start: what it costs
+  to open grows with the run, even though what it costs to write no longer
+  does. Segment it when a run outgrows memory.
+- Sharing is by content, so it holds elements a list still names and ones
+  it dropped alike: nothing collects a blob no snapshot references any
+  more. A compaction pass is the answer when a lab session runs long
+  enough to care.
+- Addressing every element costs CPU that serializing the frame in bulk
+  did not: a 200-turn run takes 408ms of store time rather than 64ms, and
+  writes 399KB rather than 21MB. The right trade while a turn is an API
+  call, and the wrong one if a driver ever gets cheap enough that 2ms a
+  turn is the bottleneck.
 - `Tiller.Driver.LLM` is exercised against `Tiller.FakeMessages`, a
   scripted stand-in for `POST /v1/messages` on Bandit, so the suite needs
   no key and no network. The real API is one opt-in test

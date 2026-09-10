@@ -16,11 +16,15 @@ defmodule Tiller.State do
   process is what lets a killed session resume and a fork start from any
   turn of a session that is no longer alive.
 
-  In memory, newest first internally so append is O(1). With
-  `config :tiller, state_log: path` (or `TILLER_STATE_LOG`) every write is
-  also appended to that file (`Tiller.State.Log`) and the store is rebuilt
-  from it at start, so a trajectory outlives the VM that produced it and
-  `Tiller.Session.resume/1` can pick a run back up where it stopped.
+  In memory, newest first internally so append is O(1), with a per-session
+  index beside the global list so reading one branch out of a race does
+  not walk every other branch's turns. With `config :tiller, state_log:
+  path` (or `TILLER_STATE_LOG`) every write is also appended to that file
+  (`Tiller.State.Log`) and the store is rebuilt from it at start, so a
+  trajectory outlives the VM that produced it and
+  `Tiller.Session.resume/1` can pick a run back up where it stopped. The
+  log shares what does not change between turns rather than writing the
+  driver context again each time; see `Tiller.State.Log`.
   """
   use GenServer
 
@@ -56,6 +60,9 @@ defmodule Tiller.State do
     %{
       seq: 0,
       events: [],
+      # the same events, per session and newest first: what every read but
+      # `events/0` actually wants
+      by_session: %{},
       subs: %{},
       snapshots: %{},
       resumes: %{},
@@ -69,22 +76,37 @@ defmodule Tiller.State do
   defp load(nil), do: initial()
 
   defp load(path) do
+    {frames, log} = Tiller.State.Log.restore(path)
+
     s =
-      Enum.reduce(Tiller.State.Log.read(path), initial(path), fn
-        {:event, %Event{} = e}, s -> %{s | seq: max(s.seq, e.seq), events: [e | s.events]}
+      Enum.reduce(frames, initial(path), fn
+        {:event, %Event{} = e}, s -> %{put_event(s, e) | seq: max(s.seq, e.seq)}
         {:snapshot, id, turn, snap}, s -> put_snapshot(s, id, turn, snap)
         {:profile, id, profile}, s -> %{s | profiles: Map.put(s.profiles, id, profile)}
         {:resumes, id, n}, s -> %{s | resumes: Map.put(s.resumes, id, n)}
         _unknown, s -> s
       end)
 
-    %{s | log: Tiller.State.Log.open(path)}
+    %{s | log: log}
   end
 
+  # Both views of an event: the global order and the session's own.
+  defp put_event(s, %Event{session_id: id} = e) do
+    %{
+      s
+      | events: [e | s.events],
+        by_session: Map.update(s.by_session, id, [e], &[e | &1])
+    }
+  end
+
+  # The handle remembers what the file already holds, so writing returns a
+  # new one rather than nothing.
   defp record(s, frame), do: record_all(s, [frame])
 
-  defp record_all(%{log: nil}, _frames), do: :ok
-  defp record_all(%{log: io}, frames), do: Tiller.State.Log.append_all(io, frames)
+  defp record_all(%{log: nil} = s, _frames), do: s
+
+  defp record_all(%{log: log} = s, frames),
+    do: %{s | log: Tiller.State.Log.append_all(log, frames)}
 
   defp put_snapshot(s, id, turn, snap) do
     update_in(
@@ -209,21 +231,21 @@ defmodule Tiller.State do
       case Map.get(extra, :snapshot) do
         nil ->
           record(s, {:event, event})
-          s
 
         snap ->
           # one write, so a crash cannot land between them
-          record_all(s, [{:event, event}, {:snapshot, session_id, turn + 1, snap}])
-          put_snapshot(s, session_id, turn + 1, snap)
+          s
+          |> record_all([{:event, event}, {:snapshot, session_id, turn + 1, snap}])
+          |> put_snapshot(session_id, turn + 1, snap)
       end
 
-    {:reply, {:ok, event}, %{s | seq: seq, events: [event | s.events]}}
+    {:reply, {:ok, event}, %{put_event(s, event) | seq: seq}}
   end
 
   def handle_call({:events, :all}, _from, s), do: {:reply, Enum.reverse(s.events), s}
 
   def handle_call({:events, session_id}, _from, s) do
-    {:reply, s.events |> Enum.filter(&(&1.session_id == session_id)) |> Enum.reverse(), s}
+    {:reply, s.by_session |> Map.get(session_id, []) |> Enum.reverse(), s}
   end
 
   def handle_call({:subscribe, key, pid}, _from, s) do
@@ -243,8 +265,8 @@ defmodule Tiller.State do
   end
 
   def handle_call({:snapshot, session_id, turn, snap}, _from, s) do
-    record(s, {:snapshot, session_id, turn, snap})
-    {:reply, :ok, put_snapshot(s, session_id, turn, snap)}
+    s = s |> record({:snapshot, session_id, turn, snap}) |> put_snapshot(session_id, turn, snap)
+    {:reply, :ok, s}
   end
 
   def handle_call({:snapshot, session_id, turn}, _from, s) do
@@ -253,27 +275,26 @@ defmodule Tiller.State do
 
   def handle_call({:bump_resumes, session_id}, _from, s) do
     s = update_in(s.resumes, &Map.update(&1, session_id, 1, fn n -> n + 1 end))
-    record(s, {:resumes, session_id, s.resumes[session_id]})
+    s = record(s, {:resumes, session_id, s.resumes[session_id]})
     {:reply, s.resumes[session_id], s}
   end
 
   def handle_call({:put_profile, id, profile}, _from, s) do
-    record(s, {:profile, id, profile})
+    s = record(s, {:profile, id, profile})
     {:reply, :ok, %{s | profiles: Map.put(s.profiles, id, profile)}}
   end
 
   def handle_call({:profile, id}, _from, s), do: {:reply, Map.fetch(s.profiles, id), s}
 
   def handle_call({:reopen, path}, _from, s) do
-    if s.log, do: File.close(s.log)
+    if s.log, do: Tiller.State.Log.close(s.log)
     {:reply, :ok, load(path)}
   end
 
   def handle_call(:log_path, _from, s), do: {:reply, s.path, s}
 
   def handle_call(:sessions, _from, s) do
-    from_events = s.events |> Enum.map(& &1.session_id) |> Enum.uniq()
-    {:reply, Enum.uniq(from_events ++ Map.keys(s.profiles)), s}
+    {:reply, Enum.uniq(Map.keys(s.by_session) ++ Map.keys(s.profiles)), s}
   end
 
   def handle_call(:clear, _from, s) do
