@@ -62,6 +62,16 @@ defmodule Tiller.Driver.LLM do
   call done with a one-sentence summary.
   """
 
+  @subagent_system """
+  You are a subagent in a tiller session. You were given one goal by the agent that
+  spawned you, and the tools you are given are the only way you can act. Call exactly
+  one tool per turn. Every tool result comes back as an Elixir term: a result that
+  reads {:error, ...} means the call failed or was refused, and you should adapt rather
+  than repeat it. You cannot spawn agents of your own. When the goal is met, or when no
+  tool can advance it, call done with a one-sentence summary: that summary is what the
+  agent waiting on you receives.
+  """
+
   @type t :: %{
           model: String.t(),
           system: String.t(),
@@ -137,6 +147,32 @@ defmodule Tiller.Driver.LLM do
   @doc "What this run has spent so far, input and output tokens."
   @impl true
   def usage(%{usage: usage}), do: usage
+
+  @doc """
+  A child that pursues `goal`, on the same model and endpoint as this
+  run and with none of its conversation.
+
+  What the child costs is billed to the child: it reports its own usage,
+  and the parent's tally is untouched by it. The whitelist it is offered
+  comes from the session the child runs in, which is the subagent one, so
+  the depth limit holds without this having to say so.
+  """
+  @impl true
+  def subagent(ctx, goal) when is_binary(goal) do
+    {__MODULE__,
+     context(goal,
+       whitelist: Tiller.Actions.sub_whitelist(),
+       system: @subagent_system,
+       model: ctx.model,
+       effort: ctx.effort,
+       display: Map.get(ctx, :display, @default_display),
+       max_turns: ctx.max_turns,
+       max_input_tokens: ctx.max_input_tokens,
+       base_url: ctx.api.base_url,
+       api_key: ctx.api.api_key,
+       timeout: ctx.api.timeout
+     )}
+  end
 
   @doc """
   The summarized thinking behind the action just decided.

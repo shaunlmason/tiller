@@ -54,6 +54,10 @@ defmodule Tiller.Session do
 
   @max_resumes 3
 
+  # How long a parked turn waits for its subagent before the wait itself
+  # becomes the result. A run that waits forever is not a run.
+  @await_timeout 30_000
+
   @impl true
   def init(opts) do
     id = Keyword.get_lazy(opts, :id, &unique_id/0)
@@ -78,7 +82,13 @@ defmodule Tiller.Session do
       turns: 0,
       status: :idle,
       forks: 0,
-      resumed: false
+      resumed: false,
+      await_timeout: Keyword.get(opts, :await_timeout, @await_timeout),
+      # turns at which this run spawned a subagent, live or in a replayed
+      # prefix: what it is allowed to wait on
+      children: MapSet.new(),
+      # the turn parked on a child, if any
+      awaiting: nil
     }
 
     # What bringing this session back needs beyond a snapshot: a snapshot
@@ -233,6 +243,17 @@ defmodule Tiller.Session do
   """
   @spec current_whitelist() :: [{atom, arity}] | nil
   def current_whitelist, do: Process.get(:tiller_session_whitelist)
+
+  @doc """
+  The driver and context of the session the calling process is running
+  in, if any.
+
+  A tool runs inside the session process, so this is how one that needs
+  the run itself rather than the world (`Tiller.Tools.spawn/1`, which
+  asks the driver for a child of itself) reaches it.
+  """
+  @spec current_driver() :: {module, term} | nil
+  def current_driver, do: Process.get(:tiller_session_driver)
 
   @doc "Start the loop. Returns immediately; the run proceeds one turn per message."
   @spec run(pid | id) :: :ok
@@ -463,9 +484,8 @@ defmodule Tiller.Session do
 
       {:action, a, ctx} ->
         Process.put(:tiller_session_turn, s.turns)
-        result = Tiller.Actions.eval(a, s.whitelist)
-        maybe_die(s)
-        record(s, a, result, ctx)
+        Process.put(:tiller_session_driver, {s.driver, s.ctx})
+        act(s, a, ctx)
 
       # Recorded prefix: the result is injected, the tool is not run.
       {:replay, a, result, ctx} ->
@@ -473,9 +493,126 @@ defmodule Tiller.Session do
     end
   end
 
+  # The child a parked turn is waiting on has finished.
+  def handle_info(
+        {:tiller_event, %Event{session_id: id, action: :halt}},
+        %{awaiting: %{id: id}} = s
+      ),
+      do: finish_await(s, outcome(id))
+
+  # Its other turns, which the subscription also delivers.
+  def handle_info({:tiller_event, %Event{}}, s), do: {:noreply, s}
+  def handle_info({:tiller_reset}, s), do: {:noreply, s}
+
+  # A child that never halts must not park its parent forever.
+  def handle_info({:await_timeout, id}, %{awaiting: %{id: id}} = s),
+    do: finish_await(s, {:error, {:await_timeout, id}})
+
   # A subagent finished; its trajectory is in State under its own id.
   def handle_info({:subagent_halted, _pid, _n}, s), do: {:noreply, s}
   def handle_info(_other, s), do: {:noreply, s}
+
+  ## acting
+
+  # Every action but one is evaluated here and recorded. `await` is the
+  # exception: waiting inside the turn would stop the session answering
+  # for itself (its own info, a fork, the lab asking what it spent) for as
+  # long as a child takes, so the turn is parked and recorded when the
+  # child halts.
+  defp act(s, {:call, Tiller.Tools, :await, [turn]} = a, ctx) do
+    cond do
+      not Enum.member?(s.whitelist, {:await, 1}) ->
+        done_turn(s, a, {:error, :not_whitelisted}, ctx)
+
+      not MapSet.member?(s.children, turn) ->
+        # Waiting is not a way to read another run: the only turns a
+        # session may wait on are the ones it spawned at, or the ones the
+        # prefix it replayed spawned at.
+        done_turn(s, a, {:error, {:no_subagent_at, turn}}, ctx)
+
+      true ->
+        park(s, a, ctx, turn)
+    end
+  end
+
+  defp act(s, a, ctx), do: done_turn(s, a, Tiller.Actions.eval(a, s.whitelist), ctx)
+
+  defp done_turn(s, a, result, ctx) do
+    maybe_die(s)
+    record(s, a, result, ctx)
+  end
+
+  defp park(s, a, ctx, turn) do
+    case child_id(s, turn) do
+      nil ->
+        done_turn(s, a, {:error, {:no_subagent_at, turn}}, ctx)
+
+      id ->
+        # Subscribe before looking: a child that halts in between would
+        # otherwise be waited on for ever.
+        s.state.subscribe(id)
+
+        case outcome(id) do
+          :running ->
+            timer = Process.send_after(self(), {:await_timeout, id}, s.await_timeout)
+            {:noreply, %{s | awaiting: %{action: a, ctx: ctx, id: id, timer: timer}}}
+
+          result ->
+            s.state.unsubscribe(id)
+            done_turn(s, a, result, ctx)
+        end
+    end
+  end
+
+  defp finish_await(%{awaiting: %{action: a, ctx: ctx, id: id, timer: timer}} = s, result) do
+    Process.cancel_timer(timer)
+    s.state.unsubscribe(id)
+    done_turn(%{s | awaiting: nil}, a, result, ctx)
+  end
+
+  # Which session the turn's subagent is. A live spawn made it under this
+  # session's id; a replayed one is a record of a child the run this
+  # branch replayed started, so the ancestry is where to look.
+  defp child_id(s, turn) do
+    Enum.find_value([s.id | ancestors(s.parent_id, 8)], fn id ->
+      candidate = "#{id}.#{turn}"
+      if match?({:ok, _}, s.state.profile(candidate)), do: candidate
+    end)
+  end
+
+  defp ancestors(nil, _left), do: []
+  defp ancestors(_id, 0), do: []
+
+  defp ancestors(id, left) do
+    case Tiller.State.profile(id) do
+      {:ok, %{parent_id: parent}} -> [id | ancestors(parent, left - 1)]
+      _ -> [id]
+    end
+  end
+
+  # What a subagent finished with, read from its own trajectory: its
+  # answer when it gave one, why it stopped when it did not.
+  defp outcome(id) do
+    events = Tiller.State.events(id)
+
+    case List.last(events) do
+      %Event{action: :halt, result: result} ->
+        case Event.halt_reason(result) do
+          nil -> answer(events, Event.halted_turns(result))
+          reason -> {:error, {:subagent_halted, reason}}
+        end
+
+      _ ->
+        :running
+    end
+  end
+
+  defp answer(events, turns) do
+    case Enum.find(Enum.reverse(events), &match?(%Event{action: {:call, _, :done, _}}, &1)) do
+      %Event{action: {:call, _m, :done, [summary]}} -> {:ok, {:done, summary}}
+      _ -> {:ok, {:halted, turns}}
+    end
+  end
 
   # What a fork or a resume at this turn needs: the driver context and the
   # world as they were before this turn's action ran.
@@ -500,7 +637,7 @@ defmodule Tiller.Session do
     # the unobserved one and a resumed model loses the result it was
     # answering.
     ctx = Driver.observe(s.driver, ctx, action, result)
-    s = %{s | ctx: ctx, turns: s.turns + 1}
+    s = %{remember_child(s, action, result) | ctx: ctx, turns: s.turns + 1}
 
     # The event and the next turn's starting point go in together. Parking
     # the snapshot covers a process that dies in the gap between turns,
@@ -516,6 +653,20 @@ defmodule Tiller.Session do
     schedule_turn(s)
     {:noreply, s}
   end
+
+  # A turn that started a subagent is a turn this run may wait on. A
+  # replayed one counts: the branch inherited the child with the prefix,
+  # and `child_id/2` is what finds whose it is.
+  defp remember_child(s, {:call, Tiller.Tools, f, _args}, {:ok, started})
+       when f in [:spawn, :spawn_subagent] do
+    case started do
+      {:spawned, turn} -> %{s | children: MapSet.put(s.children, turn)}
+      {:subagent_started, turn} -> %{s | children: MapSet.put(s.children, turn)}
+      _other -> s
+    end
+  end
+
+  defp remember_child(s, _action, _result), do: s
 
   defp schedule_turn(%{latency: 0}), do: send(self(), :turn)
   defp schedule_turn(%{latency: ms}), do: Process.send_after(self(), :turn, ms)

@@ -242,11 +242,10 @@ Thinking is omitted (adaptive by default on this model).
 1. **Parallel tool calls.** Disabled in v1 so one action equals one turn.
    Enabling them means lifting the session's one-call-per-turn limit,
    which the original design deferred to `Task.async_stream`.
-2. **Subagents from the model.** `spawn_subagent/2` takes a module and a
-   context, which a model cannot supply. The model-facing form is a
-   `spawn(goal)` tool that starts an LLM subagent with a goal string and
-   the subagent whitelist. Not v1; needs the `await` tool question from
-   the lab design answered first.
+2. **Subagents from the model.** Resolved (2026-09-10): `spawn(goal)`
+   asks the running driver for a child of itself through a new optional
+   `Tiller.Driver.subagent/2`, and `await(turn)` is a turn the session
+   parks rather than a call that blocks it. See "What shipped" below.
 3. **The open-seed task.** A system prompt for the worker loop plus
    schemas for the `seed_*` verbs. Branch isolation stops at the engine's
    state, so a fork's replayed prefix does not put the engine back where
@@ -322,6 +321,39 @@ rather than being refused after choosing it.
 in the lab. Both landed since (`Tiller.Race.noise_floor/2` and
 `Tiller.Driver.usage/1`), so the lab does separate a branch the mutation
 changed from one the model merely sampled differently.
+
+## What shipped (2026-09-10): a model that delegates
+
+Open Question 2, and with it the README limit that a parent could not use
+a subagent's result inside its own run.
+
+- **`spawn(goal)`** is `spawn_subagent/2` in a form a model can call. It
+  asks the running driver for a child of itself
+  (`Tiller.Driver.subagent/2`, optional like `usage/1`): the LLM driver
+  answers with the same model, endpoint and effort, a goal instead of a
+  conversation, and the subagent whitelist. A scripted driver does not
+  export it and the tool refuses with `:cannot_delegate` rather than
+  inventing a child. The handle it returns is the turn, not the id, for
+  the reason `spawn_subagent/2` returns one: a branch's child has a
+  different id from its source's, and a run that differs only in the
+  names of things is not a run that differs.
+- **`await(turn)`** is the wait, and the session handles it rather than
+  `Tiller.Tools`: waiting inside the turn would stop the session
+  answering for itself for as long as a child takes. The turn is parked
+  (subscribed to the child's events, with a timeout), and recorded when
+  the child halts. While a parent waits it still answers `info/1`, can be
+  forked, and reports its usage. A test asserts exactly that.
+- **The boundary holds.** A session may only wait on a turn at which it
+  spawned, or at which the prefix it replayed spawned, so `await` cannot
+  be used to read another run's log. Subagents hold neither verb, which
+  is the depth limit.
+- **A branch that replays a spawn** waits on the child the source
+  started. The prefix is a record, not a re-run, and `Tiller.Session`
+  walks the ancestry to find whose child a replayed turn's is.
+- **The new axis.** Taking `spawn` off a branch's whitelist asks what the
+  agent does without a subagent, and the lab's sweep asks it for free: in
+  the demo run that branch reads the value back itself, for fewer tokens,
+  and says so in its reasoning.
 
 ## What shipped (2026-09-08): the reason for a turn
 
