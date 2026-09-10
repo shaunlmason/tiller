@@ -34,10 +34,11 @@ defmodule Tiller.Session do
   source's driver and context as they were at that turn, or with whatever
   the mutation says instead.
 
-  Kill and resume: when the supervisor restarts a session whose events are
-  already in the store, `init/1` resumes it from the snapshot taken before
-  the turn that was in flight, with the same id, turn counter and tool
-  state. That turn runs again. Its tool already ran once before the kill,
+  Kill and resume: when the supervisor restarts a session that had already
+  begun a turn, `init/1` resumes it from the snapshot taken before that
+  turn, with the same id, turn counter and tool state. The parked snapshot
+  is what says a turn was in flight, so a branch killed before it logged
+  anything comes back too. That turn runs again. Its tool already ran once before the kill,
   so the world sees the action twice while the log shows it once. That is
   the at-least-once hazard of supervised agents, and what `kill_at` exists
   to expose. A session that keeps dying in the same turn is resumed at most
@@ -117,24 +118,25 @@ defmodule Tiller.Session do
     end
   end
 
-  # A restart with events already in the store is a resume, not a fresh run.
+  # A restart is a resume when this session already began a turn, and the
+  # snapshot is what says so: the turn handler parks one before it acts, a
+  # session that never ran has none, and a fork inherits its source's, not
+  # one under its own id. Reading the event count instead would strand a
+  # branch killed before its first event, which is exactly what a
+  # `{:kill_at, 0}` fork at turn 0 is.
   defp resume_point(state, id) do
-    case state.events(id) do
-      [] ->
-        :fresh
+    events = state.events(id)
 
-      events ->
-        case List.last(events) do
-          %Event{action: :halt, result: r} ->
-            {:halted, Event.halted_turns(r)}
+    case List.last(events) do
+      %Event{action: :halt, result: r} ->
+        {:halted, Event.halted_turns(r)}
 
-          _ ->
-            turn = length(events)
+      _ ->
+        turn = length(events)
 
-            case state.snapshot(id, turn) do
-              {:ok, snap} -> {:resume, turn, snap}
-              :error -> :fresh
-            end
+        case state.snapshot(id, turn) do
+          {:ok, snap} -> {:resume, turn, snap}
+          :error -> :fresh
         end
     end
   end

@@ -125,6 +125,57 @@ defmodule Tiller.ForkTest do
     assert ToolState.snapshot() == ToolState.snapshot(ToolState)
   end
 
+  test "kill at turn 0 of a turn-0 fork: a branch with nothing logged yet still comes back" do
+    # Turn 0 spends, so the double side effect is visible in the budget.
+    {orig, original} =
+      record("orig", [Driver.action(:spend, [4]), Driver.action(:get, [:k])])
+
+    {:ok, branch} = Session.fork(orig, 0, {:kill_at, 0})
+    id = Session.info(branch).id
+    Session.run(branch)
+
+    # The branch dies before appending anything, so the event count cannot
+    # be what says a turn was in flight. The snapshot parked before the
+    # turn is, and the resume runs from it.
+    assert {:halted, 2} = Session.await(id)
+    assert %{resumed: true, turns: 2, kill_at: 0} = Session.info(id)
+
+    replayed = State.events(id)
+
+    # spend(4) ran before the kill and again after the resume: the log has
+    # it once, the budget paid twice.
+    assert {:diverged, 0, %Event{result: {:ok, {:remaining, 6}}},
+            %Event{result: {:ok, {:remaining, 2}}}} =
+             Divergence.first_diff(original, replayed)
+
+    assert Enum.map(replayed, & &1.action) == Enum.map(original, & &1.action)
+  end
+
+  test "a session that never ran a turn is not a resume: it has no snapshot to come back to" do
+    {:ok, pid} =
+      Session.start_link(driver: FakeDriver, ctx: FakeDriver.context(@script), id: "idle")
+
+    # Started, never run: the store has its profile and nothing else.
+    assert State.events("idle") == []
+    assert State.snapshot("idle", 0) == :error
+
+    Process.unlink(pid)
+    Process.exit(pid, :kill)
+    wait_until(fn -> is_nil(Session.whereis("idle")) end)
+
+    # Nothing to come back to, so it is not brought back. The snapshot says
+    # a turn was in flight; without one there was no turn.
+    assert {:error, :no_resume_point} = Session.resume("idle")
+  end
+
+  defp wait_until(fun, tries \\ 50) do
+    cond do
+      fun.() -> :ok
+      tries == 0 -> flunk("condition not met in time")
+      true -> Process.sleep(10) && wait_until(fun, tries - 1)
+    end
+  end
+
   test "a control fork through a spawn turn stays identical" do
     sub = FakeDriver.context([Driver.action(:echo, ["sub"])])
 
