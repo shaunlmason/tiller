@@ -1,3 +1,23 @@
+defmodule Tiller.PersistenceTest.Conversation do
+  @moduledoc """
+  A driver whose context grows the way a model's does: every turn holds
+  every message the last turn held, plus one.
+  """
+  @behaviour Tiller.Driver
+
+  @impl true
+  def next_action(%{left: 0}), do: :halt
+
+  def next_action(%{left: n, messages: messages}) do
+    message = %{"role" => "assistant", "content" => String.duplicate("turn #{n} ", 60)}
+
+    {:action, Tiller.Driver.action(:echo, ["turn"]),
+     %{left: n - 1, messages: messages ++ [message]}}
+  end
+
+  def context(turns), do: %{left: turns, messages: []}
+end
+
 defmodule Tiller.PersistenceTest do
   @moduledoc """
   The durable store: what a restart does, and what can be picked up
@@ -8,6 +28,7 @@ defmodule Tiller.PersistenceTest do
 
   alias Tiller.{Divergence, Driver, Event, FakeDriver, FakeMessages, Session, State, ToolState}
   alias Tiller.Driver.LLM
+  alias Tiller.PersistenceTest.Conversation
 
   setup do
     Tiller.reset()
@@ -95,6 +116,40 @@ defmodule Tiller.PersistenceTest do
     # collides with a recorded one
     {:ok, next} = State.append("other", nil, 0, Driver.action(:echo, [1]), {:ok, 1})
     assert next.seq == List.last(events).seq + 1
+  end
+
+  test "a long run with a growing context costs the file its turns, not their square",
+       %{path: path} do
+    # What a model-driven run looks like to the store: a context that
+    # holds everything it held last turn, plus one message. Written whole
+    # each turn, sixty turns of this cost about sixty times the average
+    # context; the store shares what did not change instead.
+    turns = 60
+
+    {:ok, pid} =
+      Session.start_link(driver: Conversation, ctx: Conversation.context(turns), id: "long")
+
+    Session.run(pid)
+    assert {:halted, ^turns} = Session.await(pid, 30_000)
+
+    events = State.events("long")
+    snapshots = for t <- 0..turns, {:ok, snap} <- [State.snapshot("long", t)], do: {t, snap}
+    {:ok, last} = State.snapshot("long", turns)
+    context_bytes = byte_size(:erlang.term_to_binary(last.ctx))
+
+    # Inline, the snapshots alone would come to about turns/2 contexts.
+    inline = div(context_bytes * turns, 2)
+
+    assert File.stat!(path).size < div(inline, 5),
+           "log is #{File.stat!(path).size} bytes against #{inline} written whole"
+
+    # And it is still the same run: what a restart reads back is what the
+    # run put in, message for message.
+    State.reopen(path)
+    assert State.events("long") == events
+
+    assert for(t <- 0..turns, {:ok, snap} <- [State.snapshot("long", t)], do: {t, snap}) ==
+             snapshots
   end
 
   test "the reason a turn was chosen survives the restart with the turn", %{path: path} do
