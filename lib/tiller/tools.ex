@@ -1,4 +1,7 @@
 defmodule Tiller.Tools do
+  # `spawn/1` here is the delegation tool, not Kernel's process starter.
+  import Kernel, except: [spawn: 1]
+
   @moduledoc """
   The actual tools. Every function here is callable only if `{name, arity}`
   is in the running session's whitelist (`Tiller.Actions`).
@@ -14,6 +17,9 @@ defmodule Tiller.Tools do
     * `sleep/1` succeeds slowly, so branches finish at different times
     * `done/1`  ends a run by recording its answer, so the answer is an
       action two trajectories can be compared on
+    * `spawn/1`, `await/1`  delegate a goal to a subagent and wait for
+      what it finished with. A parent can use a child's answer in its own
+      run, which is what makes a subagent a tool rather than a spectacle
     * `seed_*` talk to the open-seed engine through `Tiller.Seed`; a
       refused verb is `{:refused, envelope}`, a result, not a crash, so
       the log records exactly which exit class the port returned (2
@@ -86,32 +92,96 @@ defmodule Tiller.Tools do
   {:subagent_failed, reason}.
   """
   def spawn_subagent(driver, ctx) do
+    case start_child(driver, ctx) do
+      {:ok, turn} -> {:subagent_started, turn}
+      {:error, reason} -> {:subagent_failed, reason}
+    end
+  end
+
+  @doc """
+  Delegate `goal` to a subagent and return the handle to wait on it with:
+  `{:spawned, turn}`, where `turn` is this turn.
+
+  This is `spawn_subagent/2` in a form a model can call. The child comes
+  from the running driver (`Tiller.Driver.subagent/3`): same model, same
+  endpoint, a goal instead of a conversation, and the subagent whitelist,
+  so it cannot delegate further. A driver that cannot make a child (a
+  script pursues no goal it was not given) refuses here rather than
+  guessing at one.
+
+  The handle is the turn rather than the child's id for the reason
+  `spawn_subagent/2` returns one: a branch's child has a different id
+  from its source's, and a run that only differs in the names of things
+  is not a run that differs.
+  """
+  def spawn(goal) when is_binary(goal) do
+    case Tiller.Session.current_driver() do
+      nil ->
+        {:error, :no_session}
+
+      {driver, ctx} ->
+        case Tiller.Driver.subagent(driver, ctx, goal) do
+          nil -> {:error, :cannot_delegate}
+          {mod, child_ctx} -> spawned(start_child(mod, child_ctx))
+        end
+    end
+  end
+
+  defp spawned({:ok, turn}), do: {:ok, {:spawned, turn}}
+  defp spawned({:error, reason}), do: {:error, {:spawn_failed, reason}}
+
+  @doc """
+  Wait for the subagent spawned at `turn` and return what it finished
+  with: its `done` summary, or why it stopped.
+
+  The session handles this one itself rather than running it here: a turn
+  that waits must not stop the session answering for itself, so the turn
+  is parked until the child halts and recorded then. Reaching this
+  function means there was no session to park it.
+  """
+  def await(turn) when is_integer(turn), do: {:error, :no_session}
+
+  # Start a session under Tiller's supervisor with the subagent whitelist
+  # and this session's world. Deterministic id, so re-running the turn
+  # after a kill finds the child already started rather than making a
+  # second one.
+  defp start_child(driver, ctx) do
     sup = Application.fetch_env!(:tiller, :supervisor)
     parent_id = Tiller.Session.current_id()
     turn = Tiller.Session.current_turn()
-    child_id = child_id(parent_id, turn)
 
     spec =
       Tiller.Session.child_spec(
-        id: child_id,
-        parent_id: parent_id,
-        parent: self(),
-        driver: driver,
-        ctx: ctx,
-        whitelist: Tiller.Actions.sub_whitelist(),
-        tool_state: Tiller.ToolState.current()
+        [
+          id: child_id(parent_id, turn),
+          parent_id: parent_id,
+          parent: self(),
+          driver: driver,
+          ctx: ctx,
+          whitelist: Tiller.Actions.sub_whitelist(),
+          tool_state: Tiller.ToolState.current()
+        ] ++ store()
       )
 
     case DynamicSupervisor.start_child(sup, spec) do
       {:ok, pid} ->
         Tiller.Session.run(pid)
-        {:subagent_started, turn}
+        {:ok, turn}
 
       {:error, {:already_started, _pid}} ->
-        {:subagent_started, turn}
+        {:ok, turn}
 
       {:error, reason} ->
-        {:subagent_failed, reason}
+        {:error, reason}
+    end
+  end
+
+  # A child writes to the store its parent reads: a session on a store of
+  # its own would otherwise start children its own `await` cannot find.
+  defp store do
+    case Tiller.Session.current_state() do
+      nil -> []
+      state -> [state: state]
     end
   end
 

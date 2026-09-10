@@ -2,7 +2,8 @@
 
 A small agentic harness for Elixir. One loop, two modes: a session you drive
 interactively, or a session that spawns supervised subagents. Subagents are
-not a mode — they're a tool (`spawn_subagent`) in the parent's whitelist.
+not a mode — they're a tool (`spawn`) in the parent's whitelist, and a
+parent waits for one with another (`await`).
 
 ### The name
 
@@ -39,7 +40,7 @@ Tiller (DynamicSupervisor)
 ├─ Tiller.State            ← ordered event store, attributed per session
 ├─ Tiller.ToolState        ← state behind side-effecting tools (kv, budget)
 ├─ Tiller.Registry         ← sessions addressable by id
-├─ Session "root"          ← you drive; base tools + spawn_subagent
+├─ Session "root"          ← you drive; base tools + spawn/await
 │   └─ Session "root.0"    ← LLM/fake-driven; base tools only, no spawn
 ├─ Session "root@2.1"      ← a fork of root at turn 2, one thing different
 └─ TillerWeb.Endpoint      ← the lab screen (Phoenix LiveView, loopback only)
@@ -127,6 +128,17 @@ Tiller (DynamicSupervisor)
 - **Actions** (`Tiller.Actions`): the registry. The grammar *is* the
   capability boundary — an agent can only touch what's in its whitelist.
   Subagents get a smaller whitelist and can't spawn (depth limit).
+- **Delegation** (`Tiller.Tools.spawn/1`, `await/1`): a model delegates by
+  calling `spawn(goal)`, which asks the running driver for a child of
+  itself (`Tiller.Driver.subagent/3`: same model and endpoint, a goal
+  instead of a conversation, the subagent whitelist) and answers with the
+  turn to wait on. `await(turn)` is the wait, and the session parks the
+  turn rather than blocking on it: while a parent waits it still answers
+  for itself, can be forked, and reports what it spent. The child's answer
+  becomes the parent's tool result, so a subagent is a tool the run uses
+  rather than a trajectory nobody reads. Taking `spawn` off a branch's
+  whitelist is then a counterfactual about the agent: the lab's sweep asks
+  it, and the model plans the work itself instead.
 - **Seed** (`Tiller.Seed`): an MCP stdio client for the
   [open-seed](https://github.com/shaunlmason/open-seed) engine. The `seed_*`
   tools (ready, get, claim, lease-renew, release, transition, evidence,
@@ -148,8 +160,16 @@ Tiller (DynamicSupervisor)
   `lib/tiller` stays free of Phoenix.
 - One turn per message, no concurrent tool calls within a turn.
   Add `Task.async_stream` when a single turn needs fan-out.
-- `spawn_subagent` starts the child and returns; there is no `await` tool
-  yet, so a parent cannot use a subagent's result within its own run.
+- Delegation is one level deep: a subagent holds neither `spawn` nor
+  `await`, so it cannot delegate and cannot wait on anything. Lifting that
+  means deciding what a tree of agents costs and who stops it.
+- A parked turn waits `await_timeout` (30s by default) and then records
+  the wait as the result. A parent whose child outlives that gets an
+  answer rather than a run that never ends, and the child keeps going.
+- A branch that replays a spawn and then waits gets the child the run it
+  replayed started, not a child of its own: the prefix is a record, not a
+  re-run. It is the honest reading of replay and it is worth knowing when
+  a counterfactual turns on what the subagent did.
 - The durable store is still one file, read whole at start: what it costs
   to open grows with the run, even though what it costs to write no longer
   does. Segment it when a run outgrows memory.

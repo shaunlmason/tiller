@@ -27,6 +27,13 @@ defmodule Tiller.Driver do
       event, which is how the lab can show a turn's reasoning next to
       the turn the same mutation produced elsewhere. A scripted driver
       has no reason to give and does not export it.
+    * `subagent/2` is how a driver makes a child of itself: given its own
+      context and a goal, the driver a subagent should run and the
+      context it starts from. This is what lets a model delegate, since
+      `spawn_subagent/2` takes a module and a context no model can
+      supply. A driver that cannot say (a script has no way to pursue a
+      goal it was not given) does not export it, and the tool refuses
+      rather than inventing a child.
   """
 
   @callback next_action(ctx :: term()) ::
@@ -39,8 +46,9 @@ defmodule Tiller.Driver do
   @callback observe(ctx :: term(), Tiller.Event.action(), Tiller.Event.result()) :: term()
   @callback override(ctx :: term(), non_neg_integer, Tiller.Event.result()) :: term()
   @callback rationale(ctx :: term()) :: binary | nil
+  @callback subagent(ctx :: term(), goal :: binary) :: {module, term} | nil
 
-  @optional_callbacks usage: 1, observe: 3, override: 3, rationale: 1
+  @optional_callbacks usage: 1, observe: 3, override: 3, rationale: 1, subagent: 2
 
   @doc """
   What this run has spent, if the driver is the kind that spends anything.
@@ -63,6 +71,19 @@ defmodule Tiller.Driver do
   @spec rationale(module, term) :: binary | nil
   def rationale(driver, ctx) do
     if function_exported?(driver, :rationale, 1), do: driver.rationale(ctx), else: nil
+  end
+
+  @doc """
+  A child of this driver that pursues `goal`, or `nil` when the driver
+  cannot make one.
+
+  The child inherits what the parent runs on (its model, its endpoint,
+  what it costs) and none of what the parent has done: a subagent gets a
+  goal, not a conversation.
+  """
+  @spec subagent(module, term, binary) :: {module, term} | nil
+  def subagent(driver, ctx, goal) do
+    if function_exported?(driver, :subagent, 2), do: driver.subagent(ctx, goal), else: nil
   end
 
   @doc "Build a quoted action term: the grammar is the capability boundary."
